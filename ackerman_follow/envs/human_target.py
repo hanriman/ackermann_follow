@@ -46,6 +46,7 @@ class BipedalHumanTarget:
         y: float = 0.0,
         yaw: float = 0.0,
         speed: float = 0.28,
+        nominal_speed: float = 0.28,
         cadence_hz: float = 1.60,
         stride_length: float = 0.45,
         stance_width: float = 0.22,
@@ -59,6 +60,7 @@ class BipedalHumanTarget:
         self.y = float(y)
         self.yaw = float(yaw)
         self.speed = float(speed)
+        self.nominal_speed = max(1e-3, float(nominal_speed))
         self.cadence_hz = float(cadence_hz)
         self.stride_length = float(stride_length)
         self.stance_width = float(stance_width)
@@ -66,7 +68,7 @@ class BipedalHumanTarget:
         self.torso_radius = float(torso_radius)
         self.height = float(height)
 
-        _rng = rng if rng is not None else np.random.default_rng()
+        self._rng = rng if rng is not None else np.random.default_rng()
 
         # Gait phase phi in [0, 2*pi)
         self.gait_phase = 0.0
@@ -75,7 +77,7 @@ class BipedalHumanTarget:
         if color_rgb is not None:
             self.color_rgb = color_rgb
         else:
-            self.color_rgb = CLOTHING_PALETTE[int(_rng.integers(len(CLOTHING_PALETTE)))]
+            self.color_rgb = CLOTHING_PALETTE[int(self._rng.integers(len(CLOTHING_PALETTE)))]
 
         # Velocity components
         self.vx = self.speed * math.cos(self.yaw)
@@ -92,17 +94,18 @@ class BipedalHumanTarget:
         rng: np.random.Generator | None = None,
     ) -> None:
         """Reset target state and sample new appearance."""
-        _rng = rng if rng is not None else np.random.default_rng()
+        if rng is not None:
+            self._rng = rng
         self.x = float(x)
         self.y = float(y)
         self.yaw = float(yaw)
         self.speed = float(speed)
-        self.gait_phase = float(_rng.uniform(0.0, 2.0 * np.pi))
+        self.gait_phase = float(self._rng.uniform(0.0, 2.0 * np.pi))
 
         if color_idx is not None:
             self.color_rgb = CLOTHING_PALETTE[color_idx % len(CLOTHING_PALETTE)]
         else:
-            self.color_rgb = CLOTHING_PALETTE[int(_rng.integers(len(CLOTHING_PALETTE)))]
+            self.color_rgb = CLOTHING_PALETTE[int(self._rng.integers(len(CLOTHING_PALETTE)))]
 
         self.vx = self.speed * math.cos(self.yaw)
         self.vy = self.speed * math.sin(self.yaw)
@@ -121,7 +124,9 @@ class BipedalHumanTarget:
         # Advance gait phase proportionally to distance walked:
         # phi_dot = 2*pi * cadence * (speed / nominal_speed)
         if self.speed > 0.01:
-            step_phase_delta = 2.0 * math.pi * self.cadence_hz * dt * (self.speed / 0.28)
+            step_phase_delta = (
+                2.0 * math.pi * self.cadence_hz * dt * (self.speed / self.nominal_speed)
+            )
             self.gait_phase = (self.gait_phase + step_phase_delta) % (2.0 * math.pi)
 
     def get_feet_positions(self) -> tuple[LegState, LegState]:
@@ -179,6 +184,9 @@ class BipedalHumanTarget:
         """
         Compute minimum intersection distance of a 2D ray against the bipedal walker.
         Tests intersections against both left and right cylindrical legs.
+
+        Note: Analytical 2D fallback/utility; the MuJoCo environment uses native C
+        `mujoco.mj_multiRay` directly against the MJCF leg/body geoms.
         """
         closest_hit = max_range
         left_leg, right_leg = self.get_feet_positions()

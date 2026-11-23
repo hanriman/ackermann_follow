@@ -1,10 +1,13 @@
 """Gymnasium environment registration for MuJoCo Ackermann target following."""
 
-# Register MuJoCo environment once implemented, e.g.:
-# from gymnasium.envs.registration import register
-# register(
-#     id="AckermanFollow-v0",
-#     entry_point="ackerman_follow.envs.mujoco_follow_env:MuJoCoAckermanFollowEnv",
-# )
+from gymnasium.envs.registration import register
 
-__all__: list[str] = []
+from ackerman_follow.envs.human_target import BipedalHumanTarget
+from ackerman_follow.envs.mujoco_follow_env import MuJoCoAckermanFollowEnv
+
+register(
+    id="AckermanFollow-v0",
+    entry_point="ackerman_follow.envs.mujoco_follow_env:MuJoCoAckermanFollowEnv",
+)
+
+__all__ = ["BipedalHumanTarget", "MuJoCoAckermanFollowEnv"]

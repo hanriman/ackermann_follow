@@ -1,12 +1,15 @@
 import numpy as np
 import torch
 
+from ackerman_follow.config import RobotConfig
 from ackerman_follow.ppo.actor_critic import ActorCritic
 from ackerman_follow.ppo.buffer import RolloutBuffer
 
 
 def get_test_device():
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
 
@@ -215,3 +218,157 @@ def test_recurrent_rollout_buffer_and_vectorized_gae():
         assert b_act.shape == (seq_len, 2, 2)
         assert b_hx.shape == (1, 2, 128)
         assert b_ep_dones.shape == (seq_len, 2)
+
+
+def test_gae_truncation_no_double_bootstrap_or_leakage():
+    """Verify truncated episodes (terminated=0, episode_done=1) do not double-bootstrap or leak GAE."""
+    device = torch.device("cpu")
+    buf_size = 6
+    buffer = RolloutBuffer(buffer_size=buf_size, obs_dim=426, act_dim=2, device=device)
+
+    obs = np.zeros(426, dtype=np.float32)
+    act = np.zeros(2, dtype=np.float32)
+
+    # Step 0..2: Episode 1; Step 2 is truncated (terminated=0, episode_done=1) with bootstrap already added to reward
+    # Step 3..5: Episode 2; Step 5 is also truncated at buffer end
+    rewards = [1.0, 1.0, 1.0 + 0.99 * 4.0, 2.0, 2.0, 2.0 + 0.99 * 7.0]
+    values = [1.0, 1.0, 1.0, 100.0, 5.0, 5.0]
+    terminateds = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    episode_dones = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+
+    for t in range(buf_size):
+        buffer.add(
+            obs,
+            act,
+            0.0,
+            rewards[t],
+            terminateds[t],
+            values[t],
+            episode_done=episode_dones[t],
+        )
+
+    buffer.compute_returns_and_advantages(last_val=999.0, gamma=0.99, gae_lambda=0.95)
+    adv = buffer.advantages.cpu().numpy()
+
+    # Step 2 must NOT bootstrap from Step 3's value (100.0) and must NOT receive Step 3's advantage
+    expected_adv_2 = (1.0 + 0.99 * 4.0) - 1.0
+    assert np.isclose(adv[2], expected_adv_2, atol=1e-5)
+
+    # Step 5 (final step truncated) must NOT bootstrap from last_val (999.0)
+    expected_adv_5 = (2.0 + 0.99 * 7.0) - 5.0
+    assert np.isclose(adv[5], expected_adv_5, atol=1e-5)
+
+
+def test_actor_critic_buffers_follow_device_and_config():
+    """Verify scaling constants are registered buffers and follow RobotConfig."""
+    custom_cfg = RobotConfig(v_min=-0.20, v_max=1.00, max_steering_angle=0.45)
+    model = ActorCritic(robot_cfg=custom_cfg)
+
+    named_buffers = dict(model.named_buffers())
+    for key in ("v_min", "v_max", "steer_max", "v_scale", "v_bias", "steer_scale"):
+        assert key in named_buffers
+
+    assert torch.isclose(model.v_scale, torch.tensor(0.60))
+    assert torch.isclose(model.v_bias, torch.tensor(0.40))
+    assert torch.isclose(model.steer_scale, torch.tensor(0.45))
+
+    device = get_test_device()
+    model = model.to(device)
+    assert model.v_scale.device.type == device.type
+    assert model.v_bias.device.type == device.type
+    assert model.steer_scale.device.type == device.type
+
+
+def test_actor_critic_sequence_mode_with_mid_episode_dones():
+    """Verify [T, B, obs_dim] sequence execution resets GRU state cleanly at mid-sequence episode_dones."""
+    device = get_test_device()
+    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    model.eval()
+
+    seq_len, batch_size = 5, 2
+    x = torch.ones((seq_len, batch_size, 426), dtype=torch.float32, device=device)
+    x[0:3, :, 50:55] = 0.2  # Strong target signal in first 3 steps
+    ep_dones = torch.zeros((seq_len, batch_size), dtype=torch.float32, device=device)
+    ep_dones[2, 0] = 1.0  # Batch item 0 resets after step 2; batch item 1 does not
+
+    feats_seq, _ = model._extract_features(x, episode_dones=ep_dones)
+    # Compare step 3 onwards for batch item 0 against fresh zero-hidden sequence starting at t=3
+    feats_fresh, _ = model._extract_features(x[3:, 0:1])
+    assert torch.allclose(feats_seq[3:, 0:1], feats_fresh, atol=1e-5)
+    # Batch item 1 retained memory from t=0..2, so its step 3 features differ from fresh zero-hidden
+    assert not torch.allclose(feats_seq[3:, 1:2], feats_fresh, atol=1e-5)
+
+
+def test_tanh_normal_saturated_logprob_consistency():
+    """Verify stored raw_action eliminates atanh log_prob drift even at extreme saturation."""
+    device = get_test_device()
+    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    obs = torch.randn((4, 426), dtype=torch.float32, device=device)
+
+    actions, logp_rollout, entropy, _, raw_u = model.get_action_and_value(
+        obs, return_raw_action=True
+    )
+    assert torch.isfinite(logp_rollout).all()
+    assert torch.isfinite(entropy).all()
+
+    # Force extreme saturation |u| > 6.5 (beyond float32 tanh precision limits)
+    extreme_u = torch.tensor([[6.5, -7.0], [-6.8, 6.2], [7.5, 7.5], [-7.5, -7.5]], device=device)
+    extreme_act = model.scale_action(torch.tanh(extreme_u))
+
+    _, logp_with_raw, ent_with_raw, _ = model.get_action_and_value(
+        obs, action=extreme_act, raw_action=extreme_u
+    )
+    assert torch.isfinite(logp_with_raw).all()
+    assert torch.isfinite(ent_with_raw).all()
+
+    # Re-evaluating with same raw_u produces identical log_prob
+    _, logp_repeat, _, _ = model.get_action_and_value(
+        obs, action=extreme_act, raw_action=extreme_u
+    )
+    assert torch.allclose(logp_with_raw, logp_repeat, atol=1e-6)
+
+
+def test_recurrent_buffer_uneven_minibatches_and_raw_actions():
+    """Verify np.array_split handles VM-sized num_envs=6 cleanly with include_raw_actions=True."""
+    device = get_test_device()
+    buf_size = 64
+    num_envs = 6
+    seq_len = 32
+    buffer = RolloutBuffer(
+        buffer_size=buf_size,
+        obs_dim=426,
+        act_dim=2,
+        device=device,
+        num_envs=num_envs,
+        gru_hidden_dim=128,
+    )
+
+    for _ in range(buf_size):
+        obs = np.ones((num_envs, 426), dtype=np.float32)
+        act = np.zeros((num_envs, 2), dtype=np.float32)
+        raw_act = np.full((num_envs, 2), 0.25, dtype=np.float32)
+        logp = np.zeros(num_envs, dtype=np.float32)
+        rew = np.ones(num_envs, dtype=np.float32)
+        done = np.zeros(num_envs, dtype=np.float32)
+        val = np.full(num_envs, 0.5, dtype=np.float32)
+        hx = np.zeros((num_envs, 128), dtype=np.float32)
+        buffer.add(
+            obs, act, logp, rew, done, val, hidden=hx, episode_done=done, raw_action=raw_act
+        )
+
+    buffer.compute_returns_and_advantages(last_val=np.full(num_envs, 0.5, dtype=np.float32))
+    # 6 envs * (64 / 32) = 12 chunks split across 8 minibatches -> all 12 chunks yielded
+    batches = list(
+        buffer.get_recurrent_batches(
+            num_mini_batches=8, seq_len=seq_len, include_raw_actions=True
+        )
+    )
+    assert len(batches) == 8
+    total_chunks = sum(b[0].shape[1] for b in batches)
+    assert total_chunks == 12
+    for b_obs, b_act, _, _, _, _, b_hx, b_ep_dones, b_raw_act in batches:
+        assert b_obs.shape[0] == seq_len and b_obs.shape[2] == 426
+        assert b_act.shape == b_raw_act.shape
+        assert torch.allclose(b_raw_act, torch.full_like(b_raw_act, 0.25))
+        assert b_hx.shape == (1, b_obs.shape[1], 128)
+        assert b_ep_dones.shape == (seq_len, b_obs.shape[1])

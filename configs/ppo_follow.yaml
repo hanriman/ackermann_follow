@@ -22,13 +22,17 @@ curriculum:
   min_episodes_per_stage: 40
   stage_thresholds:
     1: { min_return: 850.0 }
-    2: { min_return: 700.0 }
-    3: { min_return: 600.0 }
+    2: { min_return: 1200.0 }
+    3: { min_return: 750.0 }
   replay_previous_ratio: 0.30
 
 evaluation:
   eval_freq: 24576              # Evaluate every ~24.5k steps (every 6 iterations)
   n_eval_episodes: 3            # Number of deterministic test episodes per stage (12 total)
   save_best_only: false
+
+runtime:
+  vec_env: "sync"               # "sync" or "async" (spawn-safe for Linux & macOS)
+  torch_threads: "auto"         # "auto" or integer (prevents CPU oversubscription on 6-core VM)
 
 device: "auto"                  # auto, mps, cpu, cuda

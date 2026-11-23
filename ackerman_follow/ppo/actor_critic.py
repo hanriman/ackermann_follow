@@ -13,8 +13,11 @@ Features:
 import math
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.distributions.normal import Normal
+
+from ackerman_follow.config import RobotConfig, get_robot_config
 
 
 def layer_init(layer, std=math.sqrt(2), bias_const=0.0):
@@ -23,33 +26,51 @@ def layer_init(layer, std=math.sqrt(2), bias_const=0.0):
     return layer
 
 
+class _CircularConv1d(nn.Module):
+    """1D convolution with explicit circular padding (MPS- and CPU-safe)."""
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int, padding: int):
+        super().__init__()
+        self.pad = padding
+        self.conv = layer_init(
+            nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=0)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.pad > 0:
+            x = F.pad(x, (self.pad, self.pad), mode="circular")
+        return self.conv(x)
+
+
 class ActorCritic(nn.Module):
     def __init__(
         self,
-        obs_dim=426,
-        act_dim=2,
-        cam_dim=64,
-        lidar_dim=360,
-        gru_hidden_dim=128,
+        obs_dim: int | None = None,
+        act_dim: int | None = None,
+        cam_dim: int | None = None,
+        lidar_dim: int | None = None,
+        gru_hidden_dim: int = 128,
+        robot_cfg: RobotConfig | None = None,
     ):
         super().__init__()
-        self.obs_dim = obs_dim
-        self.act_dim = act_dim
-        self.cam_dim = cam_dim
-        self.lidar_dim = lidar_dim
-        self.state_dim = obs_dim - cam_dim - lidar_dim  # 2 features (v, steer)
-        self.gru_hidden_dim = gru_hidden_dim
+        cfg = robot_cfg if robot_cfg is not None else get_robot_config()
+        self.robot_cfg = cfg
+        self.cam_dim = int(cam_dim if cam_dim is not None else cfg.cam_samples)
+        self.lidar_dim = int(lidar_dim if lidar_dim is not None else cfg.lidar_samples)
+        self.obs_dim = int(obs_dim if obs_dim is not None else (self.cam_dim + self.lidar_dim + 2))
+        self.act_dim = int(act_dim if act_dim is not None else cfg.act_dim)
+        self.state_dim = self.obs_dim - self.cam_dim - self.lidar_dim  # 2 features (v, steer)
+        self.gru_hidden_dim = int(gru_hidden_dim)
 
-        # Action physical bounds (from spec.txt)
-        # v in [-0.40, 0.80] m/s, steer in [-0.553953, +0.553953] rad
-        self.register_buffer("v_min", torch.tensor(-0.40, dtype=torch.float32))
-        self.register_buffer("v_max", torch.tensor(0.80, dtype=torch.float32))
-        self.register_buffer("steer_max", torch.tensor(0.553953, dtype=torch.float32))
-
-        # Action scaling constants: action in [-1, 1] mapped to physical range
-        self.v_scale = (self.v_max - self.v_min) / 2.0  # 0.60
-        self.v_bias = (self.v_max + self.v_min) / 2.0  # 0.20
-        self.steer_scale = self.steer_max  # 0.553953
+        # Action physical bounds & scaling constants registered as buffers so .to(device) moves all
+        v_scale = (cfg.v_max - cfg.v_min) / 2.0
+        v_bias = (cfg.v_max + cfg.v_min) / 2.0
+        self.register_buffer("v_min", torch.tensor(cfg.v_min, dtype=torch.float32))
+        self.register_buffer("v_max", torch.tensor(cfg.v_max, dtype=torch.float32))
+        self.register_buffer("steer_max", torch.tensor(cfg.max_steering_angle, dtype=torch.float32))
+        self.register_buffer("v_scale", torch.tensor(v_scale, dtype=torch.float32))
+        self.register_buffer("v_bias", torch.tensor(v_bias, dtype=torch.float32))
+        self.register_buffer("steer_scale", torch.tensor(cfg.max_steering_angle, dtype=torch.float32))
 
         # Registered angular coordinate buffers for CoordConv and polar soft-argmin
         self.register_buffer(
@@ -61,38 +82,28 @@ class ActorCritic(nn.Module):
         self.register_buffer("lidar_cos", torch.cos(lidar_angles))
         self.register_buffer("lidar_sin", torch.sin(lidar_angles))
 
-        # 1. Front Camera Depth Branch (64 rays -> 1D CoordConv + 6 polar summary features)
+        # 1. Front Camera Depth Branch (64 rays -> 1D CoordConv + Max/AvgPool(4) + 6 polar features)
         self.cam_conv = nn.Sequential(
             layer_init(nn.Conv1d(2, 16, kernel_size=5, stride=2, padding=2)),
             nn.SiLU(),
             layer_init(nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1)),
             nn.SiLU(),
-            nn.AdaptiveAvgPool1d(4),
         )
         self.cam_proj = nn.Sequential(
-            layer_init(nn.Linear(32 * 4 + 6, 64)),
+            layer_init(nn.Linear(32 * 8 + 6, 64)),
             nn.LayerNorm(64),
             nn.Tanh(),
         )
 
-        # 2. 360-deg LiDAR Branch (360 rays -> circular 1D CoordConv + 11 polar/sector features)
+        # 2. 360-deg LiDAR Branch (360 rays -> circular 1D CoordConv + Max/AvgPool(8) + 11 polar features)
         self.lidar_conv = nn.Sequential(
-            layer_init(
-                nn.Conv1d(
-                    3, 16, kernel_size=7, stride=3, padding=3, padding_mode="circular"
-                )
-            ),
+            _CircularConv1d(3, 16, kernel_size=7, stride=3, padding=3),
             nn.SiLU(),
-            layer_init(
-                nn.Conv1d(
-                    16, 32, kernel_size=5, stride=3, padding=2, padding_mode="circular"
-                )
-            ),
+            _CircularConv1d(16, 32, kernel_size=5, stride=3, padding=2),
             nn.SiLU(),
-            nn.AdaptiveAvgPool1d(6),
         )
         self.lidar_proj = nn.Sequential(
-            layer_init(nn.Linear(32 * 6 + 11, 64)),
+            layer_init(nn.Linear(32 * 16 + 11, 64)),
             nn.LayerNorm(64),
             nn.Tanh(),
         )
@@ -155,15 +166,15 @@ class ActorCritic(nn.Module):
         cam_prox = 1.0 - cam_feats
         lidar_prox = 1.0 - lidar_feats
 
-        # Differentiable polar soft-argmin & sector summaries for camera
+        # Differentiable polar soft-argmin & symmetric 3-sector summaries for camera
         cam_w = torch.softmax(cam_prox * 12.0, dim=-1)
         cam_soft_bearing = (cam_w * self.cam_angles).sum(dim=-1, keepdim=True)
         cam_max_prox = cam_prox.max(dim=-1, keepdim=True).values
         cam_mean_prox = cam_prox.mean(dim=-1, keepdim=True)
-        third = self.cam_dim // 3
-        cam_right_prox = cam_prox[:, :third].max(dim=-1, keepdim=True).values
-        cam_center_prox = cam_prox[:, third : 2 * third].max(dim=-1, keepdim=True).values
-        cam_left_prox = cam_prox[:, 2 * third :].max(dim=-1, keepdim=True).values
+        edge = self.cam_dim // 3
+        cam_right_prox = cam_prox[:, :edge].max(dim=-1, keepdim=True).values
+        cam_center_prox = cam_prox[:, edge : self.cam_dim - edge].max(dim=-1, keepdim=True).values
+        cam_left_prox = cam_prox[:, self.cam_dim - edge :].max(dim=-1, keepdim=True).values
         cam_polar = torch.cat(
             [
                 cam_soft_bearing,
@@ -178,7 +189,14 @@ class ActorCritic(nn.Module):
 
         cam_coord = self.cam_angles.unsqueeze(0).expand_as(cam_prox)
         cam_in = torch.stack([cam_prox, cam_coord], dim=1)  # [N, 2, 64]
-        cam_conv_out = self.cam_conv(cam_in).flatten(start_dim=1)
+        cam_conv_raw = self.cam_conv(cam_in)
+        cam_conv_out = torch.cat(
+            [
+                F.adaptive_max_pool1d(cam_conv_raw, 4).flatten(start_dim=1),
+                F.adaptive_avg_pool1d(cam_conv_raw, 4).flatten(start_dim=1),
+            ],
+            dim=-1,
+        )
         h_cam = self.cam_proj(torch.cat([cam_conv_out, cam_polar], dim=-1))
 
         # Differentiable circular polar soft-argmin & 8-sector summaries for 360-deg LiDAR
@@ -195,7 +213,14 @@ class ActorCritic(nn.Module):
         lidar_cos_exp = self.lidar_cos.unsqueeze(0).expand_as(lidar_prox)
         lidar_sin_exp = self.lidar_sin.unsqueeze(0).expand_as(lidar_prox)
         lidar_in = torch.stack([lidar_prox, lidar_cos_exp, lidar_sin_exp], dim=1)  # [N, 3, 360]
-        lidar_conv_out = self.lidar_conv(lidar_in).flatten(start_dim=1)
+        lidar_conv_raw = self.lidar_conv(lidar_in)
+        lidar_conv_out = torch.cat(
+            [
+                F.adaptive_max_pool1d(lidar_conv_raw, 8).flatten(start_dim=1),
+                F.adaptive_avg_pool1d(lidar_conv_raw, 8).flatten(start_dim=1),
+            ],
+            dim=-1,
+        )
         h_lidar = self.lidar_proj(torch.cat([lidar_conv_out, lidar_polar], dim=-1))
 
         h_state = self.state_net(state_feats)
@@ -267,8 +292,20 @@ class ActorCritic(nn.Module):
         # Bound pre-tanh Gaussian mean to [-3.0, 3.0] so tanh reaches +/-0.995 without inf atanh
         return 3.0 * torch.tanh(self.actor_mean(features))
 
+    @staticmethod
+    def _tanh_log_det_jacobian(u: torch.Tensor) -> torch.Tensor:
+        """Numerically stable log|det(d tanh(u) / du)| = sum log(1 - tanh^2(u))."""
+        return 2.0 * (math.log(2.0) - u - F.softplus(-2.0 * u))
+
     def get_action_and_value(
-        self, x, action=None, hx=None, episode_dones=None, return_hidden=False
+        self,
+        x,
+        action=None,
+        hx=None,
+        episode_dones=None,
+        return_hidden=False,
+        raw_action=None,
+        return_raw_action=False,
     ):
         features, next_hx = self._extract_features(x, hx=hx, episode_dones=episode_dones)
         raw_mean = self._compute_action_mean(features)
@@ -279,23 +316,33 @@ class ActorCritic(nn.Module):
 
         dist = Normal(raw_mean, action_std)
 
-        if action is None:
+        if action is None and raw_action is None:
             u = dist.sample()
             norm_action = torch.tanh(u)
             action = self.scale_action(norm_action)
+        elif raw_action is not None:
+            u = raw_action.unsqueeze(0) if raw_action.dim() == 1 else raw_action
+            if action is None:
+                action = self.scale_action(torch.tanh(u))
         else:
             if action.dim() == 1:
                 action = action.unsqueeze(0)
-            norm_action = torch.clamp(self.unscale_action(action), -0.9999, 0.9999)
+            norm_action = torch.clamp(self.unscale_action(action), -0.999999, 0.999999)
             u = torch.atanh(norm_action)
 
-        # Exact squashed-Gaussian log-prob with tanh Jacobian correction (no clamping bias)
-        log_prob = (dist.log_prob(u) - torch.log(1.0 - norm_action.pow(2) + 1e-6)).sum(-1)
-        entropy = dist.entropy().sum(-1)
+        # Exact squashed-Gaussian log-prob using numerically stable tanh Jacobian
+        log_prob = (dist.log_prob(u) - self._tanh_log_det_jacobian(u)).sum(-1)
+        # True squashed policy entropy via 1-sample reparameterized Monte Carlo
+        u_ent = dist.rsample()
+        entropy = -(dist.log_prob(u_ent) - self._tanh_log_det_jacobian(u_ent)).sum(-1)
         value = self.critic(features)
 
+        if return_hidden and return_raw_action:
+            return action, log_prob, entropy, value, next_hx, u
         if return_hidden:
             return action, log_prob, entropy, value, next_hx
+        if return_raw_action:
+            return action, log_prob, entropy, value, u
         return action, log_prob, entropy, value
 
     def get_deterministic_action(self, x, hx=None, return_hidden=False):

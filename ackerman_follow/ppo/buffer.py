@@ -36,6 +36,10 @@ class RolloutBuffer:
         self.actions = torch.zeros(
             (*shape_prefix, self.act_dim), dtype=torch.float32, device=self.device
         )
+        self.raw_actions = torch.zeros(
+            (*shape_prefix, self.act_dim), dtype=torch.float32, device=self.device
+        )
+        self.has_raw_actions = False
         self.logprobs = torch.zeros(shape_prefix, dtype=torch.float32, device=self.device)
         self.rewards = torch.zeros(shape_prefix, dtype=torch.float32, device=self.device)
         # `dones` stores collision `terminated` flags for GAE value-bootstrap masking
@@ -63,9 +67,15 @@ class RolloutBuffer:
         value,
         hidden=None,
         episode_done=None,
+        raw_action=None,
     ):
         self.obs[self.pos] = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
         self.actions[self.pos] = torch.as_tensor(action, dtype=torch.float32, device=self.device)
+        if raw_action is not None:
+            self.raw_actions[self.pos] = torch.as_tensor(
+                raw_action, dtype=torch.float32, device=self.device
+            )
+            self.has_raw_actions = True
         self.logprobs[self.pos] = torch.as_tensor(logprob, dtype=torch.float32, device=self.device)
         self.rewards[self.pos] = torch.as_tensor(reward, dtype=torch.float32, device=self.device)
         self.dones[self.pos] = torch.as_tensor(done, dtype=torch.float32, device=self.device)
@@ -90,7 +100,19 @@ class RolloutBuffer:
         if self.pos == self.buffer_size:
             self.full = True
 
-    def compute_returns_and_advantages(self, last_val, last_done, gamma=0.99, gae_lambda=0.95):
+    def compute_returns_and_advantages(
+        self, last_val, last_done=None, gamma=0.99, gae_lambda=0.95
+    ):
+        """
+        Compute Generalized Advantage Estimation (GAE) and returns.
+
+        Note: `episode_dones[t]` (`terminated | truncated`) masks both bootstrapping and
+        the GAE eligibility trace across step `t -> t+1` so truncated episodes (whose
+        final-state bootstrap is folded into `rewards[t]`) never double-bootstrap or
+        leak advantages into the next episode. `last_done` is kept for signature
+        compatibility and is unused.
+        """
+        del last_done
         last_val = torch.as_tensor(last_val, dtype=torch.float32, device=self.device)
         if self.num_envs == 1:
             last_val = last_val.squeeze()
@@ -101,7 +123,7 @@ class RolloutBuffer:
 
         for t in reversed(range(self.buffer_size)):
             next_values = last_val if t == self.buffer_size - 1 else self.values[t + 1]
-            next_non_terminal = 1.0 - self.dones[t]
+            next_non_terminal = 1.0 - self.episode_dones[t]
 
             delta = self.rewards[t] + gamma * next_values * next_non_terminal - self.values[t]
             last_gae_lam = delta + gamma * gae_lambda * next_non_terminal * last_gae_lam
@@ -142,7 +164,7 @@ class RolloutBuffer:
             )
             start_idx += batch_size
 
-    def get_recurrent_batches(self, num_mini_batches, seq_len=32):
+    def get_recurrent_batches(self, num_mini_batches, seq_len=32, include_raw_actions=False):
         """
         Slice each environment trajectory into contiguous chunks of length `seq_len`,
         shuffle chunks, and yield sequence mini-batches shaped (seq_len, mb_chunks, ...).
@@ -151,11 +173,16 @@ class RolloutBuffer:
             raise ValueError(
                 f"buffer_size ({self.buffer_size}) must be divisible by seq_len ({seq_len})"
             )
+        if include_raw_actions and not self.has_raw_actions:
+            raise ValueError(
+                "include_raw_actions=True requested, but no raw_action values were stored."
+            )
 
         chunks_per_env = self.buffer_size // seq_len
         if self.num_envs == 1:
             obs = self.obs.unsqueeze(1)
             actions = self.actions.unsqueeze(1)
+            raw_actions = self.raw_actions.unsqueeze(1)
             logprobs = self.logprobs.unsqueeze(1)
             advantages = self.advantages.unsqueeze(1)
             returns = self.returns.unsqueeze(1)
@@ -165,6 +192,7 @@ class RolloutBuffer:
         else:
             obs = self.obs
             actions = self.actions
+            raw_actions = self.raw_actions
             logprobs = self.logprobs
             advantages = self.advantages
             returns = self.returns
@@ -182,6 +210,7 @@ class RolloutBuffer:
 
         c_obs = to_chunks(obs, (self.obs_dim,))
         c_act = to_chunks(actions, (self.act_dim,))
+        c_raw_act = to_chunks(raw_actions, (self.act_dim,)) if include_raw_actions else None
         c_logp = to_chunks(logprobs)
         c_adv = to_chunks(advantages)
         c_ret = to_chunks(returns)
@@ -190,13 +219,12 @@ class RolloutBuffer:
         c_hx = to_chunks(hiddens, (self.gru_hidden_dim,))[:, 0, :]  # (total_chunks, H)
 
         total_chunks = chunks_per_env * self.num_envs
-        mb_chunks = max(1, total_chunks // int(num_mini_batches))
+        n_batches = max(1, min(int(num_mini_batches), total_chunks))
         perm = np.random.permutation(total_chunks)
 
-        for start in range(0, total_chunks, mb_chunks):
-            idx = perm[start : start + mb_chunks]
+        for idx in np.array_split(perm, n_batches):
             # Transpose back to (seq_len, mb_chunks, ...) for GRU sequence execution
-            yield (
+            batch = (
                 c_obs[idx].transpose(0, 1),
                 c_act[idx].transpose(0, 1),
                 c_logp[idx].transpose(0, 1),
@@ -206,3 +234,7 @@ class RolloutBuffer:
                 c_hx[idx].unsqueeze(0),  # (1, mb_chunks, H)
                 c_ep_dones[idx].transpose(0, 1),
             )
+            if include_raw_actions:
+                yield (*batch, c_raw_act[idx].transpose(0, 1))
+            else:
+                yield batch

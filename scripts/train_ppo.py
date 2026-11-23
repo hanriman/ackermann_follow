@@ -20,6 +20,7 @@ from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter
 
 import ackerman_follow.envs  # noqa: F401
+from ackerman_follow.config import configure_cpu_threads, get_robot_config, select_device
 from ackerman_follow.ppo.actor_critic import ActorCritic
 from ackerman_follow.ppo.buffer import RolloutBuffer
 
@@ -60,7 +61,24 @@ def parse_args():
     )
     parser.add_argument("--exp-name", type=str, default="ppo_follow", help="Experiment name tag")
     parser.add_argument(
-        "--device", type=str, default="auto", choices=["auto", "mps", "cpu", "cuda"]
+        "--device",
+        type=str,
+        default=None,
+        choices=["auto", "mps", "cpu", "cuda"],
+        help="Compute device override (defaults to config YAML 'device')",
+    )
+    parser.add_argument(
+        "--vec-env",
+        type=str,
+        default=None,
+        choices=["sync", "async"],
+        help="Vectorized env mode override (defaults to config YAML 'runtime.vec_env')",
+    )
+    parser.add_argument(
+        "--torch-threads",
+        type=int,
+        default=None,
+        help="PyTorch CPU intra-op thread count override",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
@@ -92,20 +110,6 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
-def select_device(preferred):
-    if preferred == "auto":
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-        elif torch.cuda.is_available():
-            return torch.device("cuda")
-        return torch.device("cpu")
-    elif preferred == "mps" and torch.backends.mps.is_available():
-        return torch.device("mps")
-    elif preferred == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
-
-
 class _VectorSafeInfoWrapper(gym.Wrapper):
     """Drop variable-schema nested info dicts that break Gymnasium VectorEnv info batching."""
 
@@ -122,25 +126,37 @@ class _VectorSafeInfoWrapper(gym.Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def make_env_fn(
-    auto_curriculum: bool,
-    start_stage: int,
-    min_episodes_per_stage: int,
-    stage_thresholds: dict[int, float],
-    replay_previous_ratio: float,
-):
-    def _init():
+class _EnvFactory:
+    """Top-level picklable env factory for spawn-safe AsyncVectorEnv on macOS & Linux."""
+
+    def __init__(
+        self,
+        auto_curriculum: bool,
+        start_stage: int,
+        min_episodes_per_stage: int,
+        stage_thresholds: dict[int, float],
+        replay_previous_ratio: float,
+        worker_threads: int | None = None,
+    ) -> None:
+        self.auto_curriculum = auto_curriculum
+        self.start_stage = start_stage
+        self.min_episodes_per_stage = min_episodes_per_stage
+        self.stage_thresholds = stage_thresholds
+        self.replay_previous_ratio = replay_previous_ratio
+        self.worker_threads = worker_threads
+
+    def __call__(self):
+        if self.worker_threads is not None:
+            torch.set_num_threads(self.worker_threads)
         base_env = gym.make(
             "AckermanFollow-v0",
-            auto_curriculum=auto_curriculum,
-            stage=start_stage,
-            min_episodes_per_stage=min_episodes_per_stage,
-            stage_thresholds=stage_thresholds,
-            replay_previous_ratio=replay_previous_ratio,
+            auto_curriculum=self.auto_curriculum,
+            stage=self.start_stage,
+            min_episodes_per_stage=self.min_episodes_per_stage,
+            stage_thresholds=self.stage_thresholds,
+            replay_previous_ratio=self.replay_previous_ratio,
         )
         return _VectorSafeInfoWrapper(base_env)
-
-    return _init
 
 
 def evaluate_policy(model, env, n_episodes_per_stage=3, stages=(1, 2, 3, 4), device="cpu"):
@@ -232,11 +248,20 @@ def main():
     algo_cfg = cfg["algorithm"]
     eval_cfg = cfg["evaluation"]
     curr_cfg = cfg.get("curriculum", {})
+    runtime_cfg = cfg.get("runtime", {})
 
     total_timesteps = (
         args.total_steps if args.total_steps is not None else int(algo_cfg["total_timesteps"])
     )
     num_envs = args.num_envs if args.num_envs is not None else int(algo_cfg.get("num_envs", 8))
+    vec_env_mode = (args.vec_env or runtime_cfg.get("vec_env", "sync")).lower()
+    requested_threads = (
+        args.torch_threads
+        if args.torch_threads is not None
+        else runtime_cfg.get("torch_threads", "auto")
+    )
+    requested_device = args.device if args.device is not None else cfg.get("device", "auto")
+
     n_steps = int(algo_cfg["n_steps"])
     seq_len = int(algo_cfg.get("seq_len", 32))
     num_mini_batches = int(algo_cfg.get("num_mini_batches", 8))
@@ -253,6 +278,7 @@ def main():
 
     eval_freq = int(eval_cfg.get("eval_freq", 24576))
     n_eval_episodes = int(eval_cfg.get("n_eval_episodes", 3))
+    save_best_only = bool(eval_cfg.get("save_best_only", False))
 
     min_episodes_per_stage = int(curr_cfg.get("min_episodes_per_stage", 20))
     raw_thresholds = curr_cfg.get("stage_thresholds", {1: 380.0, 2: 320.0, 3: 300.0})
@@ -262,11 +288,13 @@ def main():
     }
     replay_previous_ratio = float(curr_cfg.get("replay_previous_ratio", 0.30))
 
-    # Set random seeds
+    # Set random seeds & CPU thread budget before spawning workers
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-
-    device = select_device(args.device)
+    torch_threads = configure_cpu_threads(
+        num_threads=requested_threads, num_envs=num_envs, vec_env=vec_env_mode
+    )
+    device = select_device(requested_device)
 
     # Setup directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -284,491 +312,540 @@ def main():
     csv_file_path = log_dir / "metrics.csv"
 
     orig_stdout = sys.stdout
-    dual_logger = DualLogger(log_file_path, orig_stdout)
-    sys.stdout = dual_logger
+    dual_logger = None
+    csv_file = None
+    writer = None
+    env = None
+    eval_env = None
 
-    csv_file = open(csv_file_path, "w", newline="", encoding="utf-8")
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(
-        [
-            "step",
-            "iteration",
-            "mean_ep_return",
-            "curriculum_stage",
-            "unlocked_stage",
-            "loss_pi",
-            "loss_v",
-            "entropy",
-            "sps",
-            "elapsed_sec",
-            "eval_reward",
-            "eval_dist",
-            "collision_rate",
-            "target_in_fov_rate",
-            "s1_rew",
-            "s2_rew",
-            "s3_rew",
-            "s4_rew",
-        ]
-    )
-    csv_file.flush()
+    try:
+        dual_logger = DualLogger(log_file_path, orig_stdout)
+        sys.stdout = dual_logger
 
-    writer = SummaryWriter(log_dir=str(tb_dir))
-
-    steps_per_iter = num_envs * n_steps
-    print("=" * 68)
-    print("      ACKBOT RECURRENT PPO REINFORCEMENT LEARNING TRAINING           ")
-    print("=" * 68)
-    print(f"Run Name         : {run_name}")
-    print(f"Device           : {device}")
-    print(f"Total Steps      : {total_timesteps:,}")
-    print(f"Parallel Envs    : {num_envs}")
-    print(f"Curriculum Auto  : {args.curriculum} (Start Stage {args.start_stage})")
-    print(f"Rollout Horizon  : {n_steps} steps/env ({steps_per_iter:,} transitions/iter)")
-    print(f"Recurrent SeqLen : {seq_len} (Mini-batches: {num_mini_batches})")
-    print(f"Update Epochs    : {n_epochs}")
-    print(f"Learning Rate    : {lr}")
-    print(f"Checkpoints Dir  : {ckpt_dir}")
-    print(f"TensorBoard Dir  : {tb_dir}")
-    print(f"Logs Dir         : {log_dir}")
-    print("=" * 68)
-
-    with open(run_dir / "config.yaml", "w") as f:
-        yaml.dump({"args": vars(args), "config": cfg}, f)
-
-    # Create Vectorized Training Environments & Single Eval Env
-    curriculum_enabled = bool(args.curriculum and curr_cfg.get("enabled", True))
-    env_fns = [
-        make_env_fn(
-            auto_curriculum=curriculum_enabled,
-            start_stage=args.start_stage,
-            min_episodes_per_stage=min_episodes_per_stage,
-            stage_thresholds=stage_thresholds,
-            replay_previous_ratio=replay_previous_ratio,
-        )
-        for _ in range(num_envs)
-    ]
-    env = gym.vector.SyncVectorEnv(
-        env_fns, autoreset_mode=gym.vector.AutoresetMode.DISABLED
-    )
-    eval_env = gym.make("AckermanFollow-v0")
-
-    obs_dim = env.single_observation_space.shape[0]
-    act_dim = env.single_action_space.shape[0]
-
-    # Initialize Recurrent Policy & Optimizer
-    model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim).to(device)
-    if args.warm_start is not None:
-        warm_path = Path(args.warm_start)
-        if warm_path.exists():
-            print(f"[+] Loading warm-start weights from: {warm_path}")
-            ckpt = torch.load(warm_path, map_location=device, weights_only=False)
-            state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
-            try:
-                model.load_state_dict(state_dict, strict=True)
-            except RuntimeError as exc:
-                print(
-                    f"[!] Warm-start checkpoint incompatible with recurrent CoordConv ActorCritic ({exc}). "
-                    "Training from scratch."
-                )
-        else:
-            print(f"[!] Warm-start path {warm_path} not found. Training from scratch.")
-    else:
-        print("[+] Initializing policy weights FROM SCRATCH with random orthogonal parameters.")
-
-    optimizer = optim.Adam(model.parameters(), lr=lr, eps=1e-5)
-
-    buffer = RolloutBuffer(
-        buffer_size=n_steps,
-        obs_dim=obs_dim,
-        act_dim=act_dim,
-        device=device,
-        num_envs=num_envs,
-        gru_hidden_dim=model.gru_hidden_dim,
-    )
-
-    # Training state
-    global_step = 0
-    start_time = time.time()
-    best_eval_reward = -float("inf")
-
-    obs, _ = env.reset(seed=args.seed)
-    hx = model.init_hidden(num_envs, device=device)
-
-    ep_rewards = np.zeros(num_envs, dtype=np.float64)
-    ep_lens = np.zeros(num_envs, dtype=np.int64)
-    recent_ep_rewards = []
-    frontier_ep_rewards = []
-
-    current_unlocked = int(args.start_stage)
-    active_stages = np.full(num_envs, args.start_stage, dtype=np.int64)
-
-    num_iterations = max(1, total_timesteps // steps_per_iter)
-
-    for iteration in range(1, num_iterations + 1):
-        # Linear learning rate decay
-        frac = 1.0 - (iteration - 1.0) / num_iterations
-        lr_now = max(1e-6, frac * lr)
-        optimizer.param_groups[0]["lr"] = lr_now
-
-        buffer.reset()
-
-        # 1. Collect Vectorized Trajectory Rollouts
-        for _step in range(n_steps):
-            global_step += num_envs
-            step_hx = hx.squeeze(0).detach().clone()
-
-            with torch.no_grad():
-                obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
-                action_t, logprob_t, _, value_t, next_hx = model.get_action_and_value(
-                    obs_t, hx=hx, return_hidden=True
-                )
-
-            actions = action_t.cpu().numpy()
-            logprobs = logprob_t.cpu().numpy()
-            values = value_t.squeeze(-1).cpu().numpy()
-
-            next_obs, rewards, terminateds, truncateds, infos = env.step(actions)
-            rewards_stored = rewards.astype(np.float32).copy()
-            dones_ep = np.logical_or(terminateds, truncateds)
-
-            # Bootstrap truncated episodes before resetting finished workers
-            if np.any(truncateds & ~terminateds):
-                with torch.no_grad():
-                    trunc_obs_t = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
-                    trunc_vals = model.get_value(trunc_obs_t, hx=next_hx).squeeze(-1).cpu().numpy()
-                trunc_mask = truncateds & ~terminateds
-                rewards_stored[trunc_mask] += gamma * trunc_vals[trunc_mask]
-
-            buffer.add(
-                obs,
-                actions,
-                logprobs,
-                rewards_stored,
-                terminateds.astype(np.float32),
-                values,
-                hidden=step_hx,
-                episode_done=dones_ep.astype(np.float32),
-            )
-
-            ep_rewards += rewards
-            ep_lens += 1
-            hx = next_hx
-            obs = next_obs
-
-            # Handle per-worker episode completions & synchronized curriculum graduation
-            if np.any(dones_ep):
-                for i in np.flatnonzero(dones_ep):
-                    worker_env = env.envs[i].unwrapped
-                    worker_stage = int(worker_env.stage)
-                    ep_ret = float(ep_rewards[i])
-                    recent_ep_rewards.append(ep_ret)
-
-                    writer.add_scalar("train/episodic_return", ep_ret, global_step)
-                    writer.add_scalar("train/episodic_length", int(ep_lens[i]), global_step)
-                    if "target_dist" in infos:
-                        writer.add_scalar(
-                            "train/target_distance", float(infos["target_dist"][i]), global_step
-                        )
-                    writer.add_scalar("curriculum/active_stage", worker_stage, global_step)
-                    writer.add_scalar("curriculum/unlocked_stage", current_unlocked, global_step)
-
-                    if curriculum_enabled and worker_stage == current_unlocked:
-                        frontier_ep_rewards.append(ep_ret)
-                        if len(frontier_ep_rewards) >= min_episodes_per_stage:
-                            mean_frontier = float(
-                                np.mean(frontier_ep_rewards[-min_episodes_per_stage:])
-                            )
-                            thresh = stage_thresholds.get(current_unlocked)
-                            if (
-                                thresh is not None
-                                and mean_frontier >= thresh
-                                and current_unlocked < 4
-                            ):
-                                grad_stage = current_unlocked
-                                current_unlocked += 1
-                                frontier_ep_rewards.clear()
-                                best_eval_reward = -float("inf")
-                                env.call("set_unlocked_stage", current_unlocked)
-
-                                milestone_path = ckpt_dir / f"graduated_stage_{grad_stage}.pt"
-                                torch.save(
-                                    {
-                                        "step": global_step,
-                                        "graduated_stage": grad_stage,
-                                        "unlocked_stage": current_unlocked,
-                                        "model_state_dict": model.state_dict(),
-                                        "config": cfg,
-                                    },
-                                    milestone_path,
-                                )
-                                print("=" * 68)
-                                print(
-                                    f"CURRICULUM MILESTONE: Graduated Stage {grad_stage} -> Unlocked Stage {current_unlocked}!"
-                                )
-                                print(f"Saved milestone checkpoint to: {milestone_path.name}")
-                                print("=" * 68)
-
-                # Reset only finished workers via Gymnasium 1.4.0 reset_mask after curriculum sync
-                obs, _ = env.reset(options={"reset_mask": dones_ep})
-                hx[:, dones_ep, :] = 0.0
-                ep_rewards[dones_ep] = 0.0
-                ep_lens[dones_ep] = 0
-                for i in np.flatnonzero(dones_ep):
-                    active_stages[i] = int(env.envs[i].unwrapped.stage)
-
-        # 2. Compute Advantages & Returns via Vectorized GAE
-        with torch.no_grad():
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            next_values = model.get_value(obs_t, hx=hx).squeeze(-1).cpu().numpy()
-
-        buffer.compute_returns_and_advantages(
-            last_val=next_values,
-            last_done=np.zeros(num_envs, dtype=np.float32),
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-        )
-
-        # 3. Recurrent PPO Optimization Epochs (Sequence Chunk BPTT)
-        b_adv_all = buffer.advantages
-        buffer.advantages = (b_adv_all - b_adv_all.mean()) / (b_adv_all.std() + 1e-8)
-
-        pg_losses = []
-        val_losses = []
-        entropy_losses = []
-        kl_divs = []
-
-        early_stopped = False
-        for _epoch in range(n_epochs):
-            if early_stopped:
-                break
-            for (
-                b_obs,
-                b_actions,
-                b_logprobs,
-                b_adv,
-                b_returns,
-                b_vals,
-                b_init_hx,
-                b_ep_dones,
-            ) in buffer.get_recurrent_batches(num_mini_batches=num_mini_batches, seq_len=seq_len):
-                _, new_logprob, entropy, new_value = model.get_action_and_value(
-                    b_obs,
-                    action=b_actions,
-                    hx=b_init_hx,
-                    episode_dones=b_ep_dones,
-                )
-
-                # Flatten (seq_len, mb_chunks) -> (seq_len * mb_chunks)
-                new_logprob_f = new_logprob.reshape(-1)
-                b_logprobs_f = b_logprobs.reshape(-1)
-                b_adv_f = b_adv.reshape(-1)
-                b_returns_f = b_returns.reshape(-1)
-                b_vals_f = b_vals.reshape(-1)
-                new_value_f = new_value.reshape(-1)
-                entropy_f = entropy.reshape(-1)
-
-                logratio = new_logprob_f - b_logprobs_f
-
-                with torch.no_grad():
-                    approx_kl = ((logratio.exp() - 1) - logratio).mean()
-                    kl_divs.append(approx_kl.item())
-
-                ratio = torch.clamp(logratio.exp(), 0.0, 5.0)
-
-                # Clipped Policy Loss
-                pg_loss1 = -b_adv_f * ratio
-                pg_loss2 = -b_adv_f * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                # Clipped Value Loss
-                v_loss_unclipped = (new_value_f - b_returns_f) ** 2
-                v_clipped = b_vals_f + torch.clamp(
-                    new_value_f - b_vals_f, -clip_range_vf, clip_range_vf
-                )
-                v_loss_clipped = (v_clipped - b_returns_f) ** 2
-                v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
-
-                entropy_loss = entropy_f.mean()
-                loss = pg_loss + vf_coef * v_loss - ent_coef * entropy_loss
-
-                if not torch.isfinite(loss):
-                    continue
-
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-                optimizer.step()
-
-                pg_losses.append(pg_loss.item())
-                val_losses.append(v_loss.item())
-                entropy_losses.append(entropy_loss.item())
-
-            if len(kl_divs) > 0 and np.mean(kl_divs) > target_kl:
-                early_stopped = True
-                break
-
-        # 4. Metrics & Console Output
-        elapsed = max(1e-6, time.time() - start_time)
-        sps = int(global_step / elapsed)
-        mean_pg = float(np.mean(pg_losses)) if pg_losses else 0.0
-        mean_val = float(np.mean(val_losses)) if val_losses else 0.0
-        mean_ent = float(np.mean(entropy_losses)) if entropy_losses else 0.0
-
-        writer.add_scalar("train/SPS", sps, global_step)
-        writer.add_scalar("losses/policy_loss", mean_pg, global_step)
-        writer.add_scalar("losses/value_loss", mean_val, global_step)
-        writer.add_scalar("losses/entropy", mean_ent, global_step)
-        writer.add_scalar("train/learning_rate", lr_now, global_step)
-
-        mean_ep_ret = float(np.mean(recent_ep_rewards[-20:])) if recent_ep_rewards else 0.0
-        pct = (global_step / max(1, total_timesteps)) * 100
-        print(
-            f"Iter [{iteration:3d}/{num_iterations:3d}] | "
-            f"Step: {global_step:7,d}/{total_timesteps:,d} ({pct:4.1f}%) | "
-            f"Unlck: S{current_unlocked} | "
-            f"Return: {mean_ep_ret:+7.2f} | "
-            f"Loss(P): {mean_pg:+6.3f} | "
-            f"Loss(V): {mean_val:6.3f} | "
-            f"Speed: {sps:4,d} SPS | "
-            f"Elapsed: {elapsed:.0f}s"
-        )
-
-        # 5. Periodic Evaluation & Checkpointing
-        eval_reward_val = ""
-        eval_dist_val = ""
-        eval_col_val = ""
-        eval_fov_val = ""
-        s1_val = ""
-        s2_val = ""
-        s3_val = ""
-        s4_val = ""
-
-        if global_step % eval_freq < steps_per_iter or iteration == num_iterations:
-            eval_metrics = evaluate_policy(
-                model,
-                eval_env,
-                n_episodes_per_stage=n_eval_episodes,
-                stages=(1, 2, 3, 4),
-                device=device,
-            )
-            writer.add_scalar("eval/composite_reward", eval_metrics["mean_reward"], global_step)
-            writer.add_scalar("eval/composite_dist", eval_metrics["mean_target_dist"], global_step)
-            writer.add_scalar("eval/collision_rate", eval_metrics["collision_rate"], global_step)
-            writer.add_scalar(
-                "eval/target_in_fov_rate", eval_metrics["target_in_fov_rate"], global_step
-            )
-
-            s_breakdown = eval_metrics["stage_breakdown"]
-            for s_id, s_data in s_breakdown.items():
-                writer.add_scalar(
-                    f"eval_stage/stage_{s_id}_reward", s_data["mean_reward"], global_step
-                )
-                writer.add_scalar(f"eval_stage/stage_{s_id}_dist", s_data["mean_dist"], global_step)
-                writer.add_scalar(
-                    f"eval_stage/stage_{s_id}_collision_rate", s_data["collision_rate"], global_step
-                )
-                writer.add_scalar(
-                    f"eval_stage/stage_{s_id}_fov_rate", s_data["fov_rate"], global_step
-                )
-
-            eval_reward_val = f"{eval_metrics['mean_reward']:.2f}"
-            eval_dist_val = f"{eval_metrics['mean_target_dist']:.2f}"
-            eval_col_val = f"{eval_metrics['collision_rate'] * 100:.1f}%"
-            eval_fov_val = f"{eval_metrics['target_in_fov_rate'] * 100:.1f}%"
-            s1_val = f"{s_breakdown[1]['mean_reward']:.1f}"
-            s2_val = f"{s_breakdown[2]['mean_reward']:.1f}"
-            s3_val = f"{s_breakdown[3]['mean_reward']:.1f}"
-            s4_val = f"{s_breakdown[4]['mean_reward']:.1f}"
-
-            stg_summary = " | ".join(
-                [
-                    f"S{s}:{s_breakdown[s]['mean_reward']:+.1f}(FOV {s_breakdown[s]['fov_rate']*100:.0f}%)"
-                    for s in (1, 2, 3, 4)
-                ]
-            )
-            print("-" * 68)
-            print(
-                f"[*] EVALUATION @ Step {global_step:,d} (Unlocked Stage: {current_unlocked}):\n"
-                f"    Composite Reward = {eval_metrics['mean_reward']:.2f} ± {eval_metrics['std_reward']:.2f} | "
-                f"FOV Lock = {eval_metrics['target_in_fov_rate'] * 100:.1f}% | "
-                f"Collision = {eval_metrics['collision_rate'] * 100:.1f}%\n"
-                f"    Per-Stage -> [{stg_summary}]"
-            )
-
-            unlocked_eval_reward = float(
-                np.mean([s_breakdown[s]["mean_reward"] for s in range(1, current_unlocked + 1)])
-            )
-            if unlocked_eval_reward > best_eval_reward:
-                best_eval_reward = unlocked_eval_reward
-                best_path = ckpt_dir / "best_model.pt"
-                torch.save(
-                    {
-                        "step": global_step,
-                        "unlocked_stage": current_unlocked,
-                        "model_state_dict": model.state_dict(),
-                        "eval_metrics": eval_metrics,
-                        "config": cfg,
-                    },
-                    best_path,
-                )
-                print(
-                    f"[+] New best model saved to: {best_path} "
-                    f"(Unlocked S1..S{current_unlocked} mean={unlocked_eval_reward:.2f})"
-                )
-            print("-" * 68)
-
+        csv_file = open(csv_file_path, "w", newline="", encoding="utf-8")
+        csv_writer = csv.writer(csv_file)
         csv_writer.writerow(
             [
-                global_step,
-                iteration,
-                round(mean_ep_ret, 2),
-                int(active_stages[0]),
-                current_unlocked,
-                round(mean_pg, 4),
-                round(mean_val, 4),
-                round(mean_ent, 4),
-                sps,
-                round(elapsed, 1),
-                eval_reward_val,
-                eval_dist_val,
-                eval_col_val,
-                eval_fov_val,
-                s1_val,
-                s2_val,
-                s3_val,
-                s4_val,
+                "step",
+                "iteration",
+                "mean_ep_return",
+                "curriculum_stage",
+                "unlocked_stage",
+                "loss_pi",
+                "loss_v",
+                "entropy",
+                "sps",
+                "elapsed_sec",
+                "eval_reward",
+                "eval_dist",
+                "collision_rate",
+                "target_in_fov_rate",
+                "s1_rew",
+                "s2_rew",
+                "s3_rew",
+                "s4_rew",
             ]
         )
         csv_file.flush()
 
-    # Final Save
-    latest_path = ckpt_dir / "latest_model.pt"
-    torch.save(
-        {
-            "step": global_step,
-            "unlocked_stage": current_unlocked,
-            "model_state_dict": model.state_dict(),
-            "config": cfg,
-        },
-        latest_path,
-    )
+        writer = SummaryWriter(log_dir=str(tb_dir))
 
-    env.close()
-    eval_env.close()
-    writer.close()
-    csv_file.close()
+        steps_per_iter = num_envs * n_steps
+        print("=" * 68)
+        print("      ACKBOT RECURRENT PPO REINFORCEMENT LEARNING TRAINING           ")
+        print("=" * 68)
+        print(f"Run Name         : {run_name}")
+        print(f"Device           : {device} (torch CPU threads: {torch_threads})")
+        print(f"Total Steps      : {total_timesteps:,}")
+        print(f"Parallel Envs    : {num_envs} ({vec_env_mode})")
+        print(f"Curriculum Auto  : {args.curriculum} (Start Stage {args.start_stage})")
+        print(f"Rollout Horizon  : {n_steps} steps/env ({steps_per_iter:,} transitions/iter)")
+        print(f"Recurrent SeqLen : {seq_len} (Mini-batches: {num_mini_batches})")
+        print(f"Update Epochs    : {n_epochs}")
+        print(f"Learning Rate    : {lr}")
+        print(f"Checkpoints Dir  : {ckpt_dir}")
+        print(f"TensorBoard Dir  : {tb_dir}")
+        print(f"Logs Dir         : {log_dir}")
+        print("=" * 68)
 
-    print("=" * 68)
-    print(f"Training completed successfully in {time.time() - start_time:.1f} seconds!")
-    print(f"Checkpoints saved in: {ckpt_dir}")
-    print(f"TensorBoard logs in : {tb_dir}")
-    print(f"Persistent logs in  : {log_dir} (train.log, metrics.csv)")
-    print(f"To view curves: uv run tensorboard --logdir {tb_dir.parent}")
-    print("=" * 68)
+        with open(run_dir / "config.yaml", "w") as f:
+            yaml.dump({"args": vars(args), "config": cfg}, f)
 
-    sys.stdout = orig_stdout
-    dual_logger.close()
+        # Create Vectorized Training Environments & Single Eval Env
+        curriculum_enabled = bool(args.curriculum and curr_cfg.get("enabled", True))
+        worker_threads = 1 if (vec_env_mode == "async" and num_envs > 1) else None
+        env_fns = [
+            _EnvFactory(
+                auto_curriculum=curriculum_enabled,
+                start_stage=args.start_stage,
+                min_episodes_per_stage=min_episodes_per_stage,
+                stage_thresholds=stage_thresholds,
+                replay_previous_ratio=replay_previous_ratio,
+                worker_threads=worker_threads,
+            )
+            for _ in range(num_envs)
+        ]
+        if vec_env_mode == "async" and num_envs > 1:
+            env = gym.vector.AsyncVectorEnv(
+                env_fns,
+                autoreset_mode=gym.vector.AutoresetMode.DISABLED,
+                context="spawn",
+            )
+        else:
+            env = gym.vector.SyncVectorEnv(
+                env_fns, autoreset_mode=gym.vector.AutoresetMode.DISABLED
+            )
+        eval_env = gym.make("AckermanFollow-v0")
+
+        obs_dim = env.single_observation_space.shape[0]
+        act_dim = env.single_action_space.shape[0]
+
+        # Initialize Recurrent Policy & Optimizer
+        robot_cfg = get_robot_config()
+        model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, robot_cfg=robot_cfg).to(device)
+        if args.warm_start is not None:
+            warm_path = Path(args.warm_start)
+            if warm_path.exists():
+                print(f"[+] Loading warm-start weights from: {warm_path}")
+                ckpt = torch.load(warm_path, map_location=device, weights_only=False)
+                state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+                try:
+                    model.load_state_dict(state_dict, strict=True)
+                except RuntimeError as exc:
+                    print(
+                        f"[!] Warm-start checkpoint incompatible with recurrent CoordConv ActorCritic ({exc}). "
+                        "Training from scratch."
+                    )
+            else:
+                print(f"[!] Warm-start path {warm_path} not found. Training from scratch.")
+        else:
+            print("[+] Initializing policy weights FROM SCRATCH with random orthogonal parameters.")
+
+        optimizer = optim.Adam(model.parameters(), lr=lr, eps=1e-5)
+
+        buffer = RolloutBuffer(
+            buffer_size=n_steps,
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            device=device,
+            num_envs=num_envs,
+            gru_hidden_dim=model.gru_hidden_dim,
+        )
+
+        # Training state
+        global_step = 0
+        start_time = time.time()
+        best_eval_reward = -float("inf")
+
+        obs, reset_infos = env.reset(seed=args.seed)
+        hx = model.init_hidden(num_envs, device=device)
+
+        ep_rewards = np.zeros(num_envs, dtype=np.float64)
+        ep_lens = np.zeros(num_envs, dtype=np.int64)
+        recent_ep_rewards = []
+        frontier_ep_rewards = []
+
+        current_unlocked = int(args.start_stage)
+        if "stage" in reset_infos:
+            active_stages = np.asarray(reset_infos["stage"], dtype=np.int64)
+        else:
+            active_stages = np.asarray(env.get_attr("stage"), dtype=np.int64)
+
+        num_iterations = max(1, total_timesteps // steps_per_iter)
+
+        for iteration in range(1, num_iterations + 1):
+            # Linear learning rate decay
+            frac = 1.0 - (iteration - 1.0) / num_iterations
+            lr_now = max(1e-6, frac * lr)
+            optimizer.param_groups[0]["lr"] = lr_now
+
+            buffer.reset()
+
+            # 1. Collect Vectorized Trajectory Rollouts
+            for _step in range(n_steps):
+                global_step += num_envs
+                step_hx = hx.squeeze(0).detach().clone()
+
+                with torch.no_grad():
+                    obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                    action_t, logprob_t, _, value_t, next_hx, raw_action_t = (
+                        model.get_action_and_value(
+                            obs_t, hx=hx, return_hidden=True, return_raw_action=True
+                        )
+                    )
+
+                actions = action_t.cpu().numpy()
+                raw_actions = raw_action_t.cpu().numpy()
+                logprobs = logprob_t.cpu().numpy()
+                values = value_t.squeeze(-1).cpu().numpy()
+
+                next_obs, rewards, terminateds, truncateds, infos = env.step(actions)
+                rewards_stored = rewards.astype(np.float32).copy()
+                dones_ep = np.logical_or(terminateds, truncateds)
+
+                # Bootstrap truncated episodes before resetting finished workers
+                if np.any(truncateds & ~terminateds):
+                    with torch.no_grad():
+                        trunc_obs_t = torch.as_tensor(next_obs, dtype=torch.float32, device=device)
+                        trunc_vals = (
+                            model.get_value(trunc_obs_t, hx=next_hx).squeeze(-1).cpu().numpy()
+                        )
+                    trunc_mask = truncateds & ~terminateds
+                    rewards_stored[trunc_mask] += gamma * trunc_vals[trunc_mask]
+
+                buffer.add(
+                    obs,
+                    actions,
+                    logprobs,
+                    rewards_stored,
+                    terminateds.astype(np.float32),
+                    values,
+                    hidden=step_hx,
+                    episode_done=dones_ep.astype(np.float32),
+                    raw_action=raw_actions,
+                )
+
+                ep_rewards += rewards
+                ep_lens += 1
+                hx = next_hx
+                obs = next_obs
+
+                # Handle per-worker episode completions & synchronized curriculum graduation
+                if np.any(dones_ep):
+                    for i in np.flatnonzero(dones_ep):
+                        worker_stage = (
+                            int(infos["stage"][i]) if "stage" in infos else int(active_stages[i])
+                        )
+                        ep_ret = float(ep_rewards[i])
+                        recent_ep_rewards.append(ep_ret)
+
+                        writer.add_scalar("train/episodic_return", ep_ret, global_step)
+                        writer.add_scalar("train/episodic_length", int(ep_lens[i]), global_step)
+                        if "target_dist" in infos:
+                            writer.add_scalar(
+                                "train/target_distance", float(infos["target_dist"][i]), global_step
+                            )
+                        writer.add_scalar("curriculum/active_stage", worker_stage, global_step)
+                        writer.add_scalar(
+                            "curriculum/unlocked_stage", current_unlocked, global_step
+                        )
+
+                        if curriculum_enabled and worker_stage == current_unlocked:
+                            frontier_ep_rewards.append(ep_ret)
+                            if len(frontier_ep_rewards) >= min_episodes_per_stage:
+                                mean_frontier = float(
+                                    np.mean(frontier_ep_rewards[-min_episodes_per_stage:])
+                                )
+                                thresh = stage_thresholds.get(current_unlocked)
+                                if (
+                                    thresh is not None
+                                    and mean_frontier >= thresh
+                                    and current_unlocked < 4
+                                ):
+                                    grad_stage = current_unlocked
+                                    current_unlocked += 1
+                                    frontier_ep_rewards.clear()
+                                    best_eval_reward = -float("inf")
+                                    env.call("set_unlocked_stage", current_unlocked)
+
+                                    print("=" * 68)
+                                    print(
+                                        f"CURRICULUM MILESTONE: Graduated Stage {grad_stage} -> Unlocked Stage {current_unlocked}!"
+                                    )
+                                    if not save_best_only:
+                                        milestone_path = ckpt_dir / f"graduated_stage_{grad_stage}.pt"
+                                        torch.save(
+                                            {
+                                                "step": global_step,
+                                                "graduated_stage": grad_stage,
+                                                "unlocked_stage": current_unlocked,
+                                                "model_state_dict": model.state_dict(),
+                                                "config": cfg,
+                                            },
+                                            milestone_path,
+                                        )
+                                        print(
+                                            f"Saved milestone checkpoint to: {milestone_path.name}"
+                                        )
+                                    print("=" * 68)
+
+                    # Reset only finished workers via Gymnasium 1.4.0 reset_mask after curriculum sync
+                    obs, reset_infos = env.reset(options={"reset_mask": dones_ep})
+                    hx[:, dones_ep, :] = 0.0
+                    ep_rewards[dones_ep] = 0.0
+                    ep_lens[dones_ep] = 0
+                    if "stage" in reset_infos:
+                        for i in np.flatnonzero(dones_ep):
+                            active_stages[i] = int(reset_infos["stage"][i])
+                    else:
+                        worker_stages = env.get_attr("stage")
+                        for i in np.flatnonzero(dones_ep):
+                            active_stages[i] = int(worker_stages[i])
+
+            # 2. Compute Advantages & Returns via Vectorized GAE
+            with torch.no_grad():
+                obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
+                next_values = model.get_value(obs_t, hx=hx).squeeze(-1).cpu().numpy()
+
+            buffer.compute_returns_and_advantages(
+                last_val=next_values,
+                gamma=gamma,
+                gae_lambda=gae_lambda,
+            )
+
+            # 3. Recurrent PPO Optimization Epochs (Sequence Chunk BPTT)
+            b_adv_all = buffer.advantages
+            buffer.advantages = (b_adv_all - b_adv_all.mean()) / (b_adv_all.std() + 1e-8)
+
+            pg_losses = []
+            val_losses = []
+            entropy_losses = []
+
+            for _epoch in range(n_epochs):
+                epoch_kls = []
+                for (
+                    b_obs,
+                    b_actions,
+                    b_logprobs,
+                    b_adv,
+                    b_returns,
+                    b_vals,
+                    b_init_hx,
+                    b_ep_dones,
+                    b_raw_actions,
+                ) in buffer.get_recurrent_batches(
+                    num_mini_batches=num_mini_batches,
+                    seq_len=seq_len,
+                    include_raw_actions=True,
+                ):
+                    _, new_logprob, entropy, new_value = model.get_action_and_value(
+                        b_obs,
+                        action=b_actions,
+                        raw_action=b_raw_actions,
+                        hx=b_init_hx,
+                        episode_dones=b_ep_dones,
+                    )
+
+                    # Flatten (seq_len, mb_chunks) -> (seq_len * mb_chunks)
+                    new_logprob_f = new_logprob.reshape(-1)
+                    b_logprobs_f = b_logprobs.reshape(-1)
+                    b_adv_f = b_adv.reshape(-1)
+                    b_returns_f = b_returns.reshape(-1)
+                    b_vals_f = b_vals.reshape(-1)
+                    new_value_f = new_value.reshape(-1)
+                    entropy_f = entropy.reshape(-1)
+
+                    logratio = torch.clamp(new_logprob_f - b_logprobs_f, -20.0, 20.0)
+
+                    with torch.no_grad():
+                        approx_kl = ((logratio.exp() - 1) - logratio).mean()
+                        epoch_kls.append(approx_kl.item())
+
+                    ratio = logratio.exp()
+
+                    # Clipped Policy Loss
+                    pg_loss1 = -b_adv_f * ratio
+                    pg_loss2 = -b_adv_f * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
+                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                    # Clipped Value Loss
+                    v_loss_unclipped = (new_value_f - b_returns_f) ** 2
+                    v_clipped = b_vals_f + torch.clamp(
+                        new_value_f - b_vals_f, -clip_range_vf, clip_range_vf
+                    )
+                    v_loss_clipped = (v_clipped - b_returns_f) ** 2
+                    v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+
+                    entropy_loss = entropy_f.mean()
+                    loss = pg_loss + vf_coef * v_loss - ent_coef * entropy_loss
+
+                    if not torch.isfinite(loss):
+                        continue
+
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    optimizer.step()
+
+                    pg_losses.append(pg_loss.item())
+                    val_losses.append(v_loss.item())
+                    entropy_losses.append(entropy_loss.item())
+
+                if len(epoch_kls) > 0 and np.mean(epoch_kls) > target_kl:
+                    break
+
+            # 4. Metrics & Console Output
+            elapsed = max(1e-6, time.time() - start_time)
+            sps = int(global_step / elapsed)
+            mean_pg = float(np.mean(pg_losses)) if pg_losses else 0.0
+            mean_val = float(np.mean(val_losses)) if val_losses else 0.0
+            mean_ent = float(np.mean(entropy_losses)) if entropy_losses else 0.0
+
+            writer.add_scalar("train/SPS", sps, global_step)
+            writer.add_scalar("losses/policy_loss", mean_pg, global_step)
+            writer.add_scalar("losses/value_loss", mean_val, global_step)
+            writer.add_scalar("losses/entropy", mean_ent, global_step)
+            writer.add_scalar("train/learning_rate", lr_now, global_step)
+
+            mean_ep_ret = float(np.mean(recent_ep_rewards[-20:])) if recent_ep_rewards else 0.0
+            pct = (global_step / max(1, total_timesteps)) * 100
+            print(
+                f"Iter [{iteration:3d}/{num_iterations:3d}] | "
+                f"Step: {global_step:7,d}/{total_timesteps:,d} ({pct:4.1f}%) | "
+                f"Unlck: S{current_unlocked} | "
+                f"Return: {mean_ep_ret:+7.2f} | "
+                f"Loss(P): {mean_pg:+6.3f} | "
+                f"Loss(V): {mean_val:6.3f} | "
+                f"Speed: {sps:4,d} SPS | "
+                f"Elapsed: {elapsed:.0f}s"
+            )
+
+            # 5. Periodic Evaluation & Checkpointing
+            eval_reward_val = ""
+            eval_dist_val = ""
+            eval_col_val = ""
+            eval_fov_val = ""
+            s1_val = ""
+            s2_val = ""
+            s3_val = ""
+            s4_val = ""
+
+            if global_step % eval_freq < steps_per_iter or iteration == num_iterations:
+                eval_metrics = evaluate_policy(
+                    model,
+                    eval_env,
+                    n_episodes_per_stage=n_eval_episodes,
+                    stages=(1, 2, 3, 4),
+                    device=device,
+                )
+                writer.add_scalar("eval/composite_reward", eval_metrics["mean_reward"], global_step)
+                writer.add_scalar(
+                    "eval/composite_dist", eval_metrics["mean_target_dist"], global_step
+                )
+                writer.add_scalar("eval/collision_rate", eval_metrics["collision_rate"], global_step)
+                writer.add_scalar(
+                    "eval/target_in_fov_rate", eval_metrics["target_in_fov_rate"], global_step
+                )
+
+                s_breakdown = eval_metrics["stage_breakdown"]
+                for s_id, s_data in s_breakdown.items():
+                    writer.add_scalar(
+                        f"eval_stage/stage_{s_id}_reward", s_data["mean_reward"], global_step
+                    )
+                    writer.add_scalar(
+                        f"eval_stage/stage_{s_id}_dist", s_data["mean_dist"], global_step
+                    )
+                    writer.add_scalar(
+                        f"eval_stage/stage_{s_id}_collision_rate",
+                        s_data["collision_rate"],
+                        global_step,
+                    )
+                    writer.add_scalar(
+                        f"eval_stage/stage_{s_id}_fov_rate", s_data["fov_rate"], global_step
+                    )
+
+                eval_reward_val = f"{eval_metrics['mean_reward']:.2f}"
+                eval_dist_val = f"{eval_metrics['mean_target_dist']:.2f}"
+                eval_col_val = f"{eval_metrics['collision_rate'] * 100:.1f}%"
+                eval_fov_val = f"{eval_metrics['target_in_fov_rate'] * 100:.1f}%"
+                s1_val = f"{s_breakdown[1]['mean_reward']:.1f}"
+                s2_val = f"{s_breakdown[2]['mean_reward']:.1f}"
+                s3_val = f"{s_breakdown[3]['mean_reward']:.1f}"
+                s4_val = f"{s_breakdown[4]['mean_reward']:.1f}"
+
+                stg_summary = " | ".join(
+                    [
+                        f"S{s}:{s_breakdown[s]['mean_reward']:+.1f}(FOV {s_breakdown[s]['fov_rate']*100:.0f}%)"
+                        for s in (1, 2, 3, 4)
+                    ]
+                )
+                print("-" * 68)
+                print(
+                    f"[*] EVALUATION @ Step {global_step:,d} (Unlocked Stage: {current_unlocked}):\n"
+                    f"    Composite Reward = {eval_metrics['mean_reward']:.2f} ± {eval_metrics['std_reward']:.2f} | "
+                    f"FOV Lock = {eval_metrics['target_in_fov_rate'] * 100:.1f}% | "
+                    f"Collision = {eval_metrics['collision_rate'] * 100:.1f}%\n"
+                    f"    Per-Stage -> [{stg_summary}]"
+                )
+
+                unlocked_eval_reward = float(
+                    np.mean([s_breakdown[s]["mean_reward"] for s in range(1, current_unlocked + 1)])
+                )
+                if unlocked_eval_reward > best_eval_reward:
+                    best_eval_reward = unlocked_eval_reward
+                    best_path = ckpt_dir / "best_model.pt"
+                    torch.save(
+                        {
+                            "step": global_step,
+                            "unlocked_stage": current_unlocked,
+                            "model_state_dict": model.state_dict(),
+                            "eval_metrics": eval_metrics,
+                            "config": cfg,
+                        },
+                        best_path,
+                    )
+                    print(
+                        f"[+] New best model saved to: {best_path} "
+                        f"(Unlocked S1..S{current_unlocked} mean={unlocked_eval_reward:.2f})"
+                    )
+                print("-" * 68)
+
+            csv_writer.writerow(
+                [
+                    global_step,
+                    iteration,
+                    round(mean_ep_ret, 2),
+                    int(active_stages[0]),
+                    current_unlocked,
+                    round(mean_pg, 4),
+                    round(mean_val, 4),
+                    round(mean_ent, 4),
+                    sps,
+                    round(elapsed, 1),
+                    eval_reward_val,
+                    eval_dist_val,
+                    eval_col_val,
+                    eval_fov_val,
+                    s1_val,
+                    s2_val,
+                    s3_val,
+                    s4_val,
+                ]
+            )
+            csv_file.flush()
+
+        # Final Save
+        if not save_best_only:
+            latest_path = ckpt_dir / "latest_model.pt"
+            torch.save(
+                {
+                    "step": global_step,
+                    "unlocked_stage": current_unlocked,
+                    "model_state_dict": model.state_dict(),
+                    "config": cfg,
+                },
+                latest_path,
+            )
+
+        print("=" * 68)
+        print(f"Training completed successfully in {time.time() - start_time:.1f} seconds!")
+        print(f"Checkpoints saved in: {ckpt_dir}")
+        print(f"TensorBoard logs in : {tb_dir}")
+        print(f"Persistent logs in  : {log_dir} (train.log, metrics.csv)")
+        print(f"To view curves: uv run tensorboard --logdir {tb_dir.parent}")
+        print("=" * 68)
+    finally:
+        if env is not None:
+            env.close()
+        if eval_env is not None:
+            eval_env.close()
+        if writer is not None:
+            writer.close()
+        if csv_file is not None:
+            csv_file.close()
+        sys.stdout = orig_stdout
+        if dual_logger is not None:
+            dual_logger.close()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,165 @@
+<mujoco model="ackbot_follow">
+  <compiler angle="radian" inertiafromgeom="true"/>
+
+  <option timestep="0.005" iterations="50" tolerance="1e-8" impratio="10" integrator="implicitfast">
+    <flag warmstart="enable"/>
+  </option>
+
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.7 0.7 0.7" specular="0.2 0.2 0.2"/>
+    <map znear="0.02" zfar="50"/>
+  </visual>
+
+  <default>
+    <geom friction="1.2 0.005 0.0001" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+    <default class="robot_visual">
+      <geom group="1" contype="0" conaffinity="0"/>
+    </default>
+    <default class="robot_col">
+      <geom group="1" contype="1" conaffinity="2"/>
+    </default>
+    <default class="world_static">
+      <geom group="0" contype="2" conaffinity="0"/>
+    </default>
+    <default class="human_geom">
+      <!-- Sensed by group-0 rays (mj_multiRay), non-colliding so human steps over robot -->
+      <geom group="0" contype="0" conaffinity="0"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture name="grid_tex" type="2d" builtin="checker" rgb1="0.88 0.90 0.92" rgb2="0.78 0.81 0.85" width="512" height="512"/>
+    <material name="floor_mat" texture="grid_tex" texrepeat="16 16" texuniform="true" reflectance="0.08"/>
+    <material name="deck_mat" rgba="0.16 0.19 0.24 1"/>
+    <material name="standoff_mat" rgba="0.72 0.75 0.78 1"/>
+    <material name="tire_mat" rgba="0.10 0.10 0.12 1"/>
+    <material name="sensor_mat" rgba="0.10 0.45 0.85 1"/>
+    <material name="wall_mat" rgba="0.45 0.48 0.52 1"/>
+    <material name="stage2_mat" rgba="0.28 0.48 0.68 1"/>
+    <material name="stage3_mat" rgba="0.30 0.58 0.45 1"/>
+    <material name="stage4_mat" rgba="0.72 0.42 0.25 1"/>
+    <material name="human_shirt_mat" rgba="0.15 0.30 0.65 1"/>
+    <material name="human_pants_mat" rgba="0.18 0.20 0.25 1"/>
+    <material name="human_skin_mat" rgba="0.85 0.70 0.58 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 8" dir="0 0 -1" diffuse="0.9 0.9 0.9" specular="0.2 0.2 0.2"/>
+
+    <!-- Floor in group 2 so horizontal rays (group 0) never graze floor -->
+    <geom name="floor" type="plane" size="12 12 0.1" material="floor_mat" group="2" contype="2" conaffinity="0" friction="1.2 0.005 0.0001"/>
+
+    <!-- Outer 16m x 16m Arena Boundary Walls (always active, group 0) -->
+    <body name="arena_walls" pos="0 0 0">
+      <geom name="wall_north" class="world_static" type="box" pos="8.05 0 0.40" size="0.05 8.10 0.40" material="wall_mat"/>
+      <geom name="wall_south" class="world_static" type="box" pos="-8.05 0 0.40" size="0.05 8.10 0.40" material="wall_mat"/>
+      <geom name="wall_east" class="world_static" type="box" pos="0 -8.05 0.40" size="8.10 0.05 0.40" material="wall_mat"/>
+      <geom name="wall_west" class="world_static" type="box" pos="0 8.05 0.40" size="8.10 0.05 0.40" material="wall_mat"/>
+    </body>
+
+    <!-- Stage 2: L-Wall Occlusion Obstacles -->
+    <body name="stage2_obstacles" pos="0 0 -5">
+      <geom name="s2_lwall_a" class="world_static" type="box" pos="2.80 -0.90 0.40" size="0.10 1.40 0.40" material="stage2_mat"/>
+      <geom name="s2_lwall_b" class="world_static" type="box" pos="3.60 0.40 0.40" size="0.90 0.10 0.40" material="stage2_mat"/>
+    </body>
+
+    <!-- Stage 3: Bending Corridor Obstacles (2.2m center-to-center / 2.0m clear lane) -->
+    <body name="stage3_obstacles" pos="0 0 -5">
+      <geom name="s3_corr_left_1" class="world_static" type="box" pos="2.00 1.10 0.40" size="1.70 0.10 0.40" material="stage3_mat"/>
+      <geom name="s3_corr_right_1" class="world_static" type="box" pos="1.45 -1.10 0.40" size="1.15 0.10 0.40" material="stage3_mat"/>
+      <geom name="s3_corr_left_2" class="world_static" type="box" pos="3.60 -0.55 0.40" size="0.10 1.65 0.40" material="stage3_mat"/>
+      <geom name="s3_corr_right_2" class="world_static" type="box" pos="5.80 -0.95 0.40" size="0.10 2.05 0.40" material="stage3_mat"/>
+    </body>
+
+    <!-- Stage 4: Cluttered Pillars -->
+    <body name="stage4_obstacles" pos="0 0 -5">
+      <geom name="s4_pillar_1" class="world_static" type="cylinder" pos="1.80 0.85 0.40" size="0.16 0.40" material="stage4_mat"/>
+      <geom name="s4_pillar_2" class="world_static" type="cylinder" pos="2.30 -0.95 0.40" size="0.16 0.40" material="stage4_mat"/>
+      <geom name="s4_pillar_3" class="world_static" type="cylinder" pos="3.40 0.15 0.40" size="0.16 0.40" material="stage4_mat"/>
+      <geom name="s4_pillar_4" class="world_static" type="cylinder" pos="4.30 1.45 0.40" size="0.16 0.40" material="stage4_mat"/>
+      <geom name="s4_pillar_5" class="world_static" type="cylinder" pos="4.60 -1.25 0.40" size="0.16 0.40" material="stage4_mat"/>
+      <geom name="s4_pillar_6" class="world_static" type="cylinder" pos="5.70 0.35 0.40" size="0.16 0.40" material="stage4_mat"/>
+      <geom name="s4_pillar_7" class="world_static" type="cylinder" pos="-1.20 1.60 0.40" size="0.16 0.40" material="stage4_mat"/>
+      <geom name="s4_pillar_8" class="world_static" type="cylinder" pos="-1.40 -1.60 0.40" size="0.16 0.40" material="stage4_mat"/>
+    </body>
+
+    <!-- Bipedal Human Target (3 mocap bodies driven by BipedalHumanTarget) -->
+    <body name="human_leg_l" mocap="true" pos="2.0 0.11 0.43">
+      <geom name="human_leg_l_geom" class="human_geom" type="cylinder" size="0.09 0.41" material="human_pants_mat"/>
+    </body>
+    <body name="human_leg_r" mocap="true" pos="2.0 -0.11 0.43">
+      <geom name="human_leg_r_geom" class="human_geom" type="cylinder" size="0.09 0.41" material="human_pants_mat"/>
+    </body>
+    <body name="human_torso" mocap="true" pos="2.0 0.0 1.18">
+      <geom name="human_torso_geom" class="human_geom" type="capsule" size="0.18 0.25" material="human_shirt_mat"/>
+      <geom name="human_head_geom" class="human_geom" type="sphere" pos="0 0 0.46" size="0.11" material="human_skin_mat"/>
+    </body>
+
+    <!-- AckBot: 4-Wheel Rear-Drive, Front-Ackermann Robot (spec.txt) -->
+    <body name="chassis" pos="0 0 0">
+      <freejoint name="robot_free"/>
+
+      <!-- Main chassis collision box (narrowed slightly at sides for 42 deg steering clearance) -->
+      <geom name="chassis_col" class="robot_col" type="box" pos="0 0 0.16" size="0.145 0.085 0.10" mass="0.0"/>
+
+      <!-- Multi-tier decks (total chassis mass = 5.0 kg) -->
+      <geom name="deck_level_1" class="robot_visual" type="box" pos="0 0 0.062" size="0.15 0.10 0.002" material="deck_mat" mass="3.0"/>
+      <geom name="deck_level_2" class="robot_visual" type="box" pos="0 0 0.160" size="0.15 0.10 0.002" material="deck_mat" mass="1.2"/>
+      <geom name="deck_level_3" class="robot_visual" type="box" pos="0 0 0.260" size="0.15 0.10 0.002" material="deck_mat" mass="0.6"/>
+
+      <!-- Corner standoffs -->
+      <geom name="standoff_fl" class="robot_visual" type="cylinder" pos="0.135 0.085 0.16" size="0.005 0.10" material="standoff_mat" mass="0.0"/>
+      <geom name="standoff_fr" class="robot_visual" type="cylinder" pos="0.135 -0.085 0.16" size="0.005 0.10" material="standoff_mat" mass="0.0"/>
+      <geom name="standoff_rl" class="robot_visual" type="cylinder" pos="-0.135 0.085 0.16" size="0.005 0.10" material="standoff_mat" mass="0.0"/>
+      <geom name="standoff_rr" class="robot_visual" type="cylinder" pos="-0.135 -0.085 0.16" size="0.005 0.10" material="standoff_mat" mass="0.0"/>
+
+      <!-- Front RGB-D Camera housing & sensor site: (0.15, 0.00, 0.25) -->
+      <geom name="cam_housing" class="robot_visual" type="box" pos="0.14 0 0.25" size="0.015 0.045 0.012" material="sensor_mat" mass="0.1"/>
+      <site name="cam_site" pos="0.15 0.0 0.25" size="0.01"/>
+
+      <!-- Rear 2D LiDAR mast & sensor site: (-0.15, 0.00, 0.30) -->
+      <geom name="lidar_mast" class="robot_visual" type="cylinder" pos="-0.15 0 0.28" size="0.012 0.02" material="standoff_mat" mass="0.0"/>
+      <geom name="lidar_puck" class="robot_visual" type="cylinder" pos="-0.15 0 0.30" size="0.032 0.015" material="sensor_mat" mass="0.1"/>
+      <site name="lidar_site" pos="-0.15 0.0 0.30" size="0.01"/>
+
+      <!-- Front-Left Steering Knuckle & Wheel -->
+      <body name="fl_knuckle" pos="0.15 0.15 0.06">
+        <joint name="fl_steer" type="hinge" axis="0 0 1" limited="true" range="-0.75 0.75" damping="0.2" armature="0.01"/>
+        <geom name="fl_hub" class="robot_visual" type="cylinder" size="0.015 0.015" material="standoff_mat" mass="0.05"/>
+        <body name="fl_wheel_body" pos="0 0 0">
+          <joint name="fl_wheel" type="hinge" axis="0 1 0" damping="0.02" armature="0.005"/>
+          <geom name="fl_wheel_geom" class="robot_col" type="cylinder" euler="1.57079632679 0 0" size="0.06 0.03" material="tire_mat" mass="0.35"/>
+        </body>
+      </body>
+
+      <!-- Front-Right Steering Knuckle & Wheel -->
+      <body name="fr_knuckle" pos="0.15 -0.15 0.06">
+        <joint name="fr_steer" type="hinge" axis="0 0 1" limited="true" range="-0.75 0.75" damping="0.2" armature="0.01"/>
+        <geom name="fr_hub" class="robot_visual" type="cylinder" size="0.015 0.015" material="standoff_mat" mass="0.05"/>
+        <body name="fr_wheel_body" pos="0 0 0">
+          <joint name="fr_wheel" type="hinge" axis="0 1 0" damping="0.02" armature="0.005"/>
+          <geom name="fr_wheel_geom" class="robot_col" type="cylinder" euler="1.57079632679 0 0" size="0.06 0.03" material="tire_mat" mass="0.35"/>
+        </body>
+      </body>
+
+      <!-- Rear-Left Drive Wheel -->
+      <body name="rl_wheel_body" pos="-0.15 0.15 0.06">
+        <joint name="rl_wheel" type="hinge" axis="0 1 0" damping="0.02" armature="0.005"/>
+        <geom name="rl_wheel_geom" class="robot_col" type="cylinder" euler="1.57079632679 0 0" size="0.06 0.03" material="tire_mat" mass="0.40"/>
+      </body>
+
+      <!-- Rear-Right Drive Wheel -->
+      <body name="rr_wheel_body" pos="-0.15 -0.15 0.06">
+        <joint name="rr_wheel" type="hinge" axis="0 1 0" damping="0.02" armature="0.005"/>
+        <geom name="rr_wheel_geom" class="robot_col" type="cylinder" euler="1.57079632679 0 0" size="0.06 0.03" material="tire_mat" mass="0.40"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="steer_fl" joint="fl_steer" kp="30" kv="2.0" ctrllimited="true" ctrlrange="-0.75 0.75"/>
+    <position name="steer_fr" joint="fr_steer" kp="30" kv="2.0" ctrllimited="true" ctrlrange="-0.75 0.75"/>
+    <velocity name="drive_rl" joint="rl_wheel" kv="3.0" ctrllimited="true" ctrlrange="-25 25"/>
+    <velocity name="drive_rr" joint="rr_wheel" kv="3.0" ctrllimited="true" ctrlrange="-25 25"/>
+  </actuator>
+</mujoco>
