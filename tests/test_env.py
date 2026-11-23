@@ -12,10 +12,10 @@ from scripts.train_ppo import _EnvFactory
 def test_env_spaces_and_gym_make():
     env = gym.make("AckermanFollow-v0")
     try:
-        assert env.observation_space.shape == (426,)
+        assert env.observation_space.shape == (490,)
         assert env.action_space.shape == (2,)
         obs, info = env.reset(seed=42)
-        assert obs.shape == (426,)
+        assert obs.shape == (490,)
         assert obs.dtype == np.float32
         assert env.observation_space.contains(obs)
         assert info["stage"] == 1
@@ -41,7 +41,8 @@ def test_ray_ordering_right_to_left_and_lidar_ccw():
         mujoco.mj_forward(base.model, base.data)
         obs_empty, min_lidar_empty = base._get_obs()
         assert np.allclose(obs_empty[:64], 1.0, atol=1e-5)
-        assert np.allclose(obs_empty[64:424], 1.0, atol=1e-5)
+        assert np.allclose(obs_empty[64:128], 0.0, atol=1e-5)
+        assert np.allclose(obs_empty[128:488], 1.0, atol=1e-5)
         assert np.isclose(min_lidar_empty, base.cfg.lidar_range_max, atol=1e-5)
 
         # 2. Target on robot's RIGHT (-Y, ~ -25 deg from front) within 2.0m
@@ -52,10 +53,13 @@ def test_ray_ordering_right_to_left_and_lidar_ccw():
         mujoco.mj_forward(base.model, base.data)
         obs_right, _ = base._get_obs()
         cam_r = obs_right[:64]
-        lidar_r = obs_right[64:424]
-        # Camera rays 0..20 (right) must detect the target, while 43..63 (left) stay empty (1.0)
+        mask_r = obs_right[64:128]
+        lidar_r = obs_right[128:488]
+        # Camera rays 0..20 (right) must detect the target, while 43..63 (left) stay empty
         assert np.min(cam_r[:21]) < 0.5
         assert np.allclose(cam_r[43:], 1.0, atol=1e-5)
+        assert np.max(mask_r[:21]) == 1.0
+        assert np.allclose(mask_r[43:], 0.0, atol=1e-5)
         # LiDAR CCW: right sector (~315..359 deg) detects target, left sector (~45..135 deg) is empty
         assert np.min(lidar_r[315:]) < 0.8
         assert np.allclose(lidar_r[45:135], 1.0, atol=1e-5)
@@ -67,9 +71,12 @@ def test_ray_ordering_right_to_left_and_lidar_ccw():
         mujoco.mj_forward(base.model, base.data)
         obs_left, _ = base._get_obs()
         cam_l = obs_left[:64]
-        lidar_l = obs_left[64:424]
+        mask_l = obs_left[64:128]
+        lidar_l = obs_left[128:488]
         assert np.min(cam_l[43:]) < 0.5
         assert np.allclose(cam_l[:21], 1.0, atol=1e-5)
+        assert np.max(mask_l[43:]) == 1.0
+        assert np.allclose(mask_l[:21], 0.0, atol=1e-5)
         # LiDAR index ~20..40 (+Y left front) detects target, right sector (~225..315) is empty
         assert np.min(lidar_l[10:45]) < 0.8
         assert np.allclose(lidar_l[225:315], 1.0, atol=1e-5)
@@ -110,7 +117,7 @@ def test_stage_switching_and_collision_termination():
         for stg in (1, 2, 3, 4):
             obs, info = env.reset(seed=100 + stg, options={"stage": stg})
             assert info["stage"] == stg
-            assert obs.shape == (426,)
+            assert obs.shape == (490,)
 
         # In Stage 4, place robot directly moving into pillar_3 at (3.40, 0.15) or drive into Stage 2 L-wall
         base = env.unwrapped
@@ -172,6 +179,17 @@ def test_human_overstep_does_not_terminate_and_stage2_fov_spawn():
         env.reset(seed=99, options={"stage": 3})
         _, rew_fwd, _, _, _ = env.step(np.array([0.80, 0.0], dtype=np.float32))
         assert rew_fwd > rew_rev
+
+        # 4. Stage 3 corridor bend around x=3.6..5.8 is open and target stays inside clear corridor
+        env.reset(seed=12, options={"stage": 3})
+        for _ in range(300):
+            base._step_human_target()
+            tx, ty = base.target.x, base.target.y
+            # Ensure target never intersects Stage 3 wall boxes
+            assert not (0.30 <= tx <= 5.90 and 0.98 <= ty <= 1.22)  # s3_corr_left_1
+            assert not (0.30 <= tx <= 3.60 and -1.22 <= ty <= -0.98)  # s3_corr_right_1
+            assert not (3.48 <= tx <= 3.72 and -3.30 <= ty <= -1.00)  # s3_corr_left_2
+            assert not (5.68 <= tx <= 5.92 and -3.30 <= ty <= 1.20)  # s3_corr_right_2
     finally:
         env.close()
 
@@ -195,7 +213,7 @@ def test_async_vector_env_spawn_rollout():
     )
     try:
         obs, infos = vec_env.reset(seed=42)
-        assert obs.shape == (2, 426)
+        assert obs.shape == (2, 490)
         assert list(vec_env.get_attr("stage")) == [1, 1]
 
         vec_env.call("set_unlocked_stage", 3)
@@ -203,7 +221,7 @@ def test_async_vector_env_spawn_rollout():
 
         actions = np.array([[0.4, 0.1], [0.4, -0.1]], dtype=np.float32)
         next_obs, rewards, terminateds, truncateds, step_infos = vec_env.step(actions)
-        assert next_obs.shape == (2, 426)
+        assert next_obs.shape == (2, 490)
         assert rewards.shape == (2,)
         assert terminateds.shape == (2,)
         assert truncateds.shape == (2,)

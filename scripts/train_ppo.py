@@ -454,9 +454,10 @@ def main():
         num_iterations = max(1, total_timesteps // steps_per_iter)
 
         for iteration in range(1, num_iterations + 1):
-            # Linear learning rate decay
+            # Linear learning rate decay with floor so late-unlocked stages keep adapting
             frac = 1.0 - (iteration - 1.0) / num_iterations
-            lr_now = max(1e-6, frac * lr)
+            min_lr = max(1e-4, 0.33 * lr)
+            lr_now = max(min_lr, frac * lr)
             optimizer.param_groups[0]["lr"] = lr_now
 
             buffer.reset()

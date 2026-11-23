@@ -63,12 +63,12 @@
       <geom name="s2_lwall_b" class="world_static" type="box" pos="3.60 0.40 0.40" size="0.90 0.10 0.40" material="stage2_mat"/>
     </body>
 
-    <!-- Stage 3: Bending Corridor Obstacles (2.2m center-to-center / 2.0m clear lane) -->
+    <!-- Stage 3: Bending Corridor Obstacles (2.0m clear lane around 90-deg right bend) -->
     <body name="stage3_obstacles" pos="0 0 -5">
-      <geom name="s3_corr_left_1" class="world_static" type="box" pos="2.00 1.10 0.40" size="1.70 0.10 0.40" material="stage3_mat"/>
-      <geom name="s3_corr_right_1" class="world_static" type="box" pos="1.45 -1.10 0.40" size="1.15 0.10 0.40" material="stage3_mat"/>
-      <geom name="s3_corr_left_2" class="world_static" type="box" pos="3.60 -0.55 0.40" size="0.10 1.65 0.40" material="stage3_mat"/>
-      <geom name="s3_corr_right_2" class="world_static" type="box" pos="5.80 -0.95 0.40" size="0.10 2.05 0.40" material="stage3_mat"/>
+      <geom name="s3_corr_left_1" class="world_static" type="box" pos="3.10 1.10 0.40" size="2.80 0.10 0.40" material="stage3_mat"/>
+      <geom name="s3_corr_right_1" class="world_static" type="box" pos="1.95 -1.10 0.40" size="1.65 0.10 0.40" material="stage3_mat"/>
+      <geom name="s3_corr_left_2" class="world_static" type="box" pos="3.60 -2.15 0.40" size="0.10 1.15 0.40" material="stage3_mat"/>
+      <geom name="s3_corr_right_2" class="world_static" type="box" pos="5.80 -1.05 0.40" size="0.10 2.25 0.40" material="stage3_mat"/>
     </body>
 
     <!-- Stage 4: Cluttered Pillars -->

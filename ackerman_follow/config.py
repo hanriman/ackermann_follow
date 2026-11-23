@@ -20,15 +20,18 @@ class RobotConfig:
     """
     Canonical physical, kinematic, and sensor specification for AckBot.
 
-    Observation Contract (426-D float32, values in [0, 1] / [-1, 1]):
+    Observation Contract (490-D float32, values in [0, 1] / [-1, 1]):
         - [0 : 64]    Front camera depth rays (64 samples), normalized to [0, 1]
                       between [cam_range_min, cam_range_max], ordered right-to-left
                       (-cam_fov_deg/2 to +cam_fov_deg/2 in REP 103 yaw, matching
                       ActorCritic `cam_angles` in [-1, +1]).
-        - [64 : 424]  Planar 2D LiDAR rays (360 samples), normalized to [0, 1]
+        - [64 : 128]  Front camera RGB target-detection mask (64 samples in {0.0, 1.0}),
+                      aligned 1-to-1 with camera depth rays (1.0 on target bounding-box
+                      columns, 0.0 on walls/pillars/background).
+        - [128 : 488] Planar 2D LiDAR rays (360 samples), normalized to [0, 1]
                       between [lidar_range_min, lidar_range_max], ordered
                       counter-clockwise starting from +X (0 to 2*pi, 1 deg step).
-        - [424 : 426] Proprioceptive state [v_norm, steer_norm] in [-1, 1],
+        - [488 : 490] Proprioceptive state [v_norm, steer_norm] in [-1, 1],
                       corresponding to physical [v, steer] via normalize_action().
     """
 
@@ -66,6 +69,7 @@ class RobotConfig:
     cam_range_min: float = 0.15
     cam_range_max: float = 5.00
     cam_samples: int = 64
+    cam_mask_samples: int = 64
 
     # LiDAR 2D Parameters
     lidar_pos_x: float = -0.15
@@ -77,7 +81,7 @@ class RobotConfig:
     lidar_samples: int = 360
 
     # Observation & Action Dimensions
-    obs_dim: int = 64 + 360 + 2  # 426
+    obs_dim: int = 64 + 64 + 360 + 2  # 490
     act_dim: int = 2
 
     # Following Goal Target
@@ -185,6 +189,7 @@ def _load_robot_config_cached(resolved_path: str | None) -> RobotConfig:
             cam_range_min=float(camera.get("depth_min", 0.15)),
             cam_range_max=float(camera.get("depth_max", 5.00)),
             cam_samples=cam_samples,
+            cam_mask_samples=cam_samples,
             lidar_pos_x=float(lidar.get("pos_x", -0.15)),
             lidar_pos_y=float(lidar.get("pos_y", 0.00)),
             lidar_pos_z=float(lidar.get("pos_z", 0.30)),
@@ -192,7 +197,7 @@ def _load_robot_config_cached(resolved_path: str | None) -> RobotConfig:
             lidar_range_min=float(lidar.get("range_min", 0.10)),
             lidar_range_max=float(lidar.get("range_max", 3.00)),
             lidar_samples=lidar_samples,
-            obs_dim=cam_samples + lidar_samples + 2,
+            obs_dim=2 * cam_samples + lidar_samples + 2,
         )
     return RobotConfig()
 

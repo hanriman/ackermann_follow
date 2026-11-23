@@ -1,6 +1,6 @@
 # Ackerman Follow (MuJoCo)
 
-Clean MuJoCo-native workspace for 4-wheel Ackermann target following with Recurrent Spatial PPO (`426-D` pure sensor input: `64` front camera depth rays + `360` planar LiDAR rays + `2` proprioception states).
+Clean MuJoCo-native workspace for 4-wheel Ackermann target following with Recurrent Spatial PPO (`490-D` sensor input: `64` front camera depth rays + `64` RGB-D target-detection mask rays + `360` planar LiDAR rays + `2` proprioception states).
 
 ## Directory Structure
 

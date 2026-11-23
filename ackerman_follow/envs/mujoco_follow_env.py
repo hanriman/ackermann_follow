@@ -83,10 +83,13 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         self.n_substeps = max(1, int(round(self.cfg.dt / float(self.model.opt.timestep))))
 
-        # Gymnasium spaces
+        # Gymnasium spaces (64 cam depth + 64 cam target mask + 360 LiDAR + 2 state = 490)
         obs_low = np.concatenate(
             [
-                np.zeros(self.cfg.cam_samples + self.cfg.lidar_samples, dtype=np.float32),
+                np.zeros(
+                    self.cfg.cam_samples + self.cfg.cam_mask_samples + self.cfg.lidar_samples,
+                    dtype=np.float32,
+                ),
                 np.full(2, -1.0, dtype=np.float32),
             ]
         )
@@ -126,6 +129,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
         # Bipedal target model & episode state
         self.target = BipedalHumanTarget(rng=self.np_random)
+        self._base_target_speed = 0.32
         self._waypoints: list[tuple[float, float]] = []
         self._wp_idx = 0
         self._step_count = 0
@@ -176,6 +180,15 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             m.body_mocapid[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "human_torso")]
         )
         self._shirt_geom_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "human_torso_geom")
+        self._human_gids = np.array(
+            [
+                mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "human_leg_l_geom"),
+                mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "human_leg_r_geom"),
+                self._shirt_geom_id,
+                mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "human_head_geom"),
+            ],
+            dtype=np.int32,
+        )
 
         # Stage body & geom IDs for sub-millisecond curriculum switching
         self._stage_bodies: dict[int, int] = {}
@@ -279,7 +292,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), -0.65, 0.65))
             hyaw = float(rng.uniform(-0.15, 0.15))
             speed = float(rng.uniform(0.28, 0.42))
-            self._waypoints = [(4.70, 0.0), (4.70, -3.50), (2.20, -4.00)]
+            self._waypoints = [(4.70, 0.0), (4.70, -3.70), (4.70, 0.0), (1.20, 0.0)]
         else:
             # Stage 4: weave between staggered pillars
             robot_x = float(rng.uniform(-0.25, 0.25))
@@ -309,12 +322,21 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         )
 
         self._wp_idx = 0
+        self._base_target_speed = speed
         self.target.reset(x=hx, y=hy, yaw=hyaw, speed=speed, rng=rng)
         self.model.geom_rgba[self._shirt_geom_id, :3] = self.target.color_rgb
         self._sync_human_mocap()
 
     def _step_human_target(self) -> None:
         """Advance human heading toward stage waypoints or smooth open-arena curves."""
+        if self.stage >= 2:
+            rx, ry, _, _, _ = self._get_robot_pose_and_vel()
+            dist = math.hypot(self.target.x - rx, self.target.y - ry)
+            pace = float(np.clip(2.4 / max(2.4, dist), 0.55, 1.0))
+            self.target.speed = self._base_target_speed * pace
+        else:
+            self.target.speed = self._base_target_speed
+
         if self._waypoints:
             wx, wy = self._waypoints[self._wp_idx]
             dx = wx - self.target.x
@@ -360,7 +382,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         return float(pos[0]), float(pos[1]), yaw, v_fwd, steer_center
 
     def _get_obs(self) -> tuple[np.ndarray, float]:
-        """Cast camera + LiDAR rays via mj_multiRay and build normalized 426-D observation."""
+        """Cast camera + LiDAR rays via mj_multiRay and build normalized 490-D observation."""
         cam_pnt = np.ascontiguousarray(self.data.site_xpos[self._cam_site_id], dtype=np.float64)
         cam_rot = self.data.site_xmat[self._cam_site_id].reshape(3, 3)
         cam_vecs = np.ascontiguousarray(self._cam_local_vecs @ cam_rot.T, dtype=np.float64).ravel()
@@ -385,6 +407,21 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             self._cam_dist,
         )
         cam_norm = self.cfg.normalize_cam(cam_meters).astype(np.float32)
+
+        # RGB-D target-detection mask: fill horizontal bounding-box span [min_hit .. max_hit]
+        raw_hits = (
+            np.isin(self._cam_geomid, self._human_gids)
+            & (self._cam_dist >= 0.0)
+            & (self._cam_dist <= self.cfg.cam_range_max)
+        )
+        cam_mask = np.zeros(self.cfg.cam_mask_samples, dtype=np.float32)
+        if np.any(raw_hits):
+            hit_indices = np.flatnonzero(raw_hits)
+            i0, i1 = int(hit_indices[0]), int(hit_indices[-1])
+            target_depth_max = float(np.max(cam_meters[hit_indices])) + 0.35
+            for idx in range(i0, i1 + 1):
+                if raw_hits[idx] or cam_meters[idx] <= target_depth_max:
+                    cam_mask[idx] = 1.0
 
         lidar_pnt = np.ascontiguousarray(self.data.site_xpos[self._lidar_site_id], dtype=np.float64)
         lidar_rot = self.data.site_xmat[self._lidar_site_id].reshape(3, 3)
@@ -411,13 +448,21 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             self.cfg.lidar_range_max,
             self._lidar_dist,
         )
-        min_lidar = float(np.min(lidar_meters))
+        # Measure obstacle clearance strictly against static walls/pillars (ignoring human legs)
+        obstacle_lidar_meters = np.where(
+            np.isin(self._lidar_geomid, self._human_gids),
+            self.cfg.lidar_range_max,
+            lidar_meters,
+        )
+        min_lidar = float(np.min(obstacle_lidar_meters))
         lidar_norm = self.cfg.normalize_lidar(lidar_meters).astype(np.float32)
 
         _, _, _, v_fwd, steer_center = self._get_robot_pose_and_vel()
         state_norm = self.cfg.normalize_state(v_fwd, steer_center)
 
-        obs = np.concatenate([cam_norm, lidar_norm, state_norm], axis=0).astype(np.float32)
+        obs = np.concatenate([cam_norm, cam_mask, lidar_norm, state_norm], axis=0).astype(
+            np.float32
+        )
         return obs, min_lidar
 
     def _compute_target_metrics(self) -> tuple[float, float, bool]:
@@ -563,7 +608,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             far_rev_mult = 5.0 if dist > (self.cfg.target_follow_distance + 0.15) else 1.0
             reverse_pen = -0.08 * far_rev_mult * rev_frac
 
-            clearance_pen = -0.35 * max(0.0, (0.25 - min_lidar) / 0.25)
+            clearance_pen = -0.40 * max(0.0, (0.35 - min_lidar) / 0.35)
             personal_space_pen = -0.25 * max(0.0, (0.35 - dist) / 0.35)
 
             reward = (

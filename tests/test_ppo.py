@@ -16,10 +16,10 @@ def get_test_device():
 
 def test_actor_critic_forward_pass():
     device = get_test_device()
-    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    model = ActorCritic(obs_dim=490, act_dim=2).to(device)
 
     batch_size = 8
-    dummy_obs = torch.randn((batch_size, 426), dtype=torch.float32, device=device)
+    dummy_obs = torch.randn((batch_size, 490), dtype=torch.float32, device=device)
 
     action, log_prob, entropy, value = model.get_action_and_value(dummy_obs)
 
@@ -31,10 +31,10 @@ def test_actor_critic_forward_pass():
 
 def test_action_bounds():
     device = get_test_device()
-    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    model = ActorCritic(obs_dim=490, act_dim=2).to(device)
 
     # Sample 100 actions and verify all physical limits
-    dummy_obs = torch.randn((100, 426), dtype=torch.float32, device=device)
+    dummy_obs = torch.randn((100, 490), dtype=torch.float32, device=device)
     actions, _, _, _ = model.get_action_and_value(dummy_obs)
 
     v = actions[:, 0]
@@ -46,9 +46,9 @@ def test_action_bounds():
 
 def test_deterministic_action():
     device = get_test_device()
-    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    model = ActorCritic(obs_dim=490, act_dim=2).to(device)
 
-    dummy_obs = torch.randn((4, 426), dtype=torch.float32, device=device)
+    dummy_obs = torch.randn((4, 490), dtype=torch.float32, device=device)
     action1 = model.get_deterministic_action(dummy_obs)
     action2 = model.get_deterministic_action(dummy_obs)
 
@@ -59,10 +59,10 @@ def test_deterministic_action():
 def test_rollout_buffer_and_gae():
     device = get_test_device()
     buf_size = 64
-    buffer = RolloutBuffer(buffer_size=buf_size, obs_dim=426, act_dim=2, device=device)
+    buffer = RolloutBuffer(buffer_size=buf_size, obs_dim=490, act_dim=2, device=device)
 
     for i in range(buf_size):
-        obs = np.random.randn(426).astype(np.float32)
+        obs = np.random.randn(490).astype(np.float32)
         act = np.array([0.2, 0.1], dtype=np.float32)
         logp = -1.5
         rew = 1.0
@@ -84,7 +84,7 @@ def test_rollout_buffer_and_gae():
     for b_obs, b_act, b_logp, b_adv, b_ret, b_val in buffer.get_batches(batch_size=16):
         batch_count += 1
         total_samples += len(b_obs)
-        assert b_obs.shape == (16, 426)
+        assert b_obs.shape == (16, 490)
         assert b_act.shape == (16, 2)
 
     assert batch_count == 4
@@ -95,12 +95,12 @@ def test_gae_terminal_reward_propagation():
     """Verify GAE correctly propagates terminal collision penalty to preceding steps without bootstrapping across episodes."""
     device = torch.device("cpu")
     buf_size = 10
-    buffer = RolloutBuffer(buffer_size=buf_size, obs_dim=426, act_dim=2, device=device)
+    buffer = RolloutBuffer(buffer_size=buf_size, obs_dim=490, act_dim=2, device=device)
 
     # Episode 1: Steps 0 to 4. Step 4 ends in a collision penalty (-25.0, done=1.0)
     # Episode 2: Steps 5 to 9. Step 5 is clean restart (reward=1.0, done=0.0, value=10.0)
     for t in range(buf_size):
-        obs = np.zeros(426, dtype=np.float32)
+        obs = np.zeros(490, dtype=np.float32)
         act = np.zeros(2, dtype=np.float32)
         logp = 0.0
         val = 0.0
@@ -131,17 +131,22 @@ def test_gae_terminal_reward_propagation():
 
 
 def test_actor_critic_angular_sensitivity_and_non_saturating_bounds():
-    """Verify CoordConv/polar features distinguish left vs right target dips and reach full steering bounds."""
+    """Verify CoordConv/target-mask polar features distinguish target vs wall and left vs right."""
     device = get_test_device()
-    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    model = ActorCritic(obs_dim=490, act_dim=2).to(device)
 
-    obs_right = torch.ones((1, 426), dtype=torch.float32, device=device)
-    obs_right[:, 5:9] = 0.20  # Target dip on right side of camera FOV
-    obs_right[:, 424:] = 0.0
+    obs_right = torch.ones((1, 490), dtype=torch.float32, device=device)
+    obs_right[:, 64:128] = 0.0
+    obs_right[:, 5:9] = 0.30
+    obs_right[:, 64 + 5 : 64 + 9] = 1.0  # Target on right
+    obs_right[:, 488:] = 0.0
 
-    obs_left = torch.ones((1, 426), dtype=torch.float32, device=device)
-    obs_left[:, 55:59] = 0.20  # Target dip on left side of camera FOV
-    obs_left[:, 424:] = 0.0
+    obs_left = torch.ones((1, 490), dtype=torch.float32, device=device)
+    obs_left[:, 64:128] = 0.0
+    obs_left[:, 5:9] = 0.15  # Closer wall on right
+    obs_left[:, 55:59] = 0.40  # Target on left
+    obs_left[:, 64 + 55 : 64 + 59] = 1.0
+    obs_left[:, 488:] = 0.0
 
     feat_r, _ = model._extract_features(obs_right)
     feat_l, _ = model._extract_features(obs_left)
@@ -156,11 +161,15 @@ def test_actor_critic_angular_sensitivity_and_non_saturating_bounds():
 def test_actor_critic_recurrent_memory_and_episode_reset():
     """Verify GRU hidden state retains prior target observation and resets cleanly on episode_dones."""
     device = get_test_device()
-    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    model = ActorCritic(obs_dim=490, act_dim=2).to(device)
 
-    obs_target_left = torch.ones((1, 426), dtype=torch.float32, device=device)
+    obs_target_left = torch.ones((1, 490), dtype=torch.float32, device=device)
+    obs_target_left[:, 64:128] = 0.0
     obs_target_left[:, 56:60] = 0.25
-    obs_empty = torch.ones((1, 426), dtype=torch.float32, device=device)
+    obs_target_left[:, 64 + 56 : 64 + 60] = 1.0
+
+    obs_empty = torch.ones((1, 490), dtype=torch.float32, device=device)
+    obs_empty[:, 64:128] = 0.0
 
     hx0 = model.init_hidden(1, device=device)
     _, _, _, _, hx1 = model.get_action_and_value(obs_target_left, hx=hx0, return_hidden=True)
@@ -186,7 +195,7 @@ def test_recurrent_rollout_buffer_and_vectorized_gae():
     seq_len = 16
     buffer = RolloutBuffer(
         buffer_size=buf_size,
-        obs_dim=426,
+        obs_dim=490,
         act_dim=2,
         device=device,
         num_envs=num_envs,
@@ -194,7 +203,7 @@ def test_recurrent_rollout_buffer_and_vectorized_gae():
     )
 
     for t in range(buf_size):
-        obs = np.ones((num_envs, 426), dtype=np.float32)
+        obs = np.ones((num_envs, 490), dtype=np.float32)
         act = np.zeros((num_envs, 2), dtype=np.float32)
         logp = np.zeros(num_envs, dtype=np.float32)
         rew = np.ones(num_envs, dtype=np.float32)
@@ -214,7 +223,7 @@ def test_recurrent_rollout_buffer_and_vectorized_gae():
     batches = list(buffer.get_recurrent_batches(num_mini_batches=4, seq_len=seq_len))
     assert len(batches) == 4
     for b_obs, b_act, b_logp, b_adv, b_ret, b_val, b_hx, b_ep_dones in batches:
-        assert b_obs.shape == (seq_len, 2, 426)
+        assert b_obs.shape == (seq_len, 2, 490)
         assert b_act.shape == (seq_len, 2, 2)
         assert b_hx.shape == (1, 2, 128)
         assert b_ep_dones.shape == (seq_len, 2)
@@ -224,9 +233,9 @@ def test_gae_truncation_no_double_bootstrap_or_leakage():
     """Verify truncated episodes (terminated=0, episode_done=1) do not double-bootstrap or leak GAE."""
     device = torch.device("cpu")
     buf_size = 6
-    buffer = RolloutBuffer(buffer_size=buf_size, obs_dim=426, act_dim=2, device=device)
+    buffer = RolloutBuffer(buffer_size=buf_size, obs_dim=490, act_dim=2, device=device)
 
-    obs = np.zeros(426, dtype=np.float32)
+    obs = np.zeros(490, dtype=np.float32)
     act = np.zeros(2, dtype=np.float32)
 
     # Step 0..2: Episode 1; Step 2 is truncated (terminated=0, episode_done=1) with bootstrap already added to reward
@@ -282,12 +291,14 @@ def test_actor_critic_buffers_follow_device_and_config():
 def test_actor_critic_sequence_mode_with_mid_episode_dones():
     """Verify [T, B, obs_dim] sequence execution resets GRU state cleanly at mid-sequence episode_dones."""
     device = get_test_device()
-    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
+    model = ActorCritic(obs_dim=490, act_dim=2).to(device)
     model.eval()
 
     seq_len, batch_size = 5, 2
-    x = torch.ones((seq_len, batch_size, 426), dtype=torch.float32, device=device)
+    x = torch.ones((seq_len, batch_size, 490), dtype=torch.float32, device=device)
+    x[:, :, 64:128] = 0.0
     x[0:3, :, 50:55] = 0.2  # Strong target signal in first 3 steps
+    x[0:3, :, 64 + 50 : 64 + 55] = 1.0
     ep_dones = torch.zeros((seq_len, batch_size), dtype=torch.float32, device=device)
     ep_dones[2, 0] = 1.0  # Batch item 0 resets after step 2; batch item 1 does not
 
@@ -302,8 +313,8 @@ def test_actor_critic_sequence_mode_with_mid_episode_dones():
 def test_tanh_normal_saturated_logprob_consistency():
     """Verify stored raw_action eliminates atanh log_prob drift even at extreme saturation."""
     device = get_test_device()
-    model = ActorCritic(obs_dim=426, act_dim=2).to(device)
-    obs = torch.randn((4, 426), dtype=torch.float32, device=device)
+    model = ActorCritic(obs_dim=490, act_dim=2).to(device)
+    obs = torch.randn((4, 490), dtype=torch.float32, device=device)
 
     actions, logp_rollout, entropy, _, raw_u = model.get_action_and_value(
         obs, return_raw_action=True
@@ -336,7 +347,7 @@ def test_recurrent_buffer_uneven_minibatches_and_raw_actions():
     seq_len = 32
     buffer = RolloutBuffer(
         buffer_size=buf_size,
-        obs_dim=426,
+        obs_dim=490,
         act_dim=2,
         device=device,
         num_envs=num_envs,
@@ -344,7 +355,7 @@ def test_recurrent_buffer_uneven_minibatches_and_raw_actions():
     )
 
     for _ in range(buf_size):
-        obs = np.ones((num_envs, 426), dtype=np.float32)
+        obs = np.ones((num_envs, 490), dtype=np.float32)
         act = np.zeros((num_envs, 2), dtype=np.float32)
         raw_act = np.full((num_envs, 2), 0.25, dtype=np.float32)
         logp = np.zeros(num_envs, dtype=np.float32)
@@ -367,7 +378,7 @@ def test_recurrent_buffer_uneven_minibatches_and_raw_actions():
     total_chunks = sum(b[0].shape[1] for b in batches)
     assert total_chunks == 12
     for b_obs, b_act, _, _, _, _, b_hx, b_ep_dones, b_raw_act in batches:
-        assert b_obs.shape[0] == seq_len and b_obs.shape[2] == 426
+        assert b_obs.shape[0] == seq_len and b_obs.shape[2] == 490
         assert b_act.shape == b_raw_act.shape
         assert torch.allclose(b_raw_act, torch.full_like(b_raw_act, 0.25))
         assert b_hx.shape == (1, b_obs.shape[1], 128)

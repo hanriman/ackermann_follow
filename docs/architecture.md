@@ -4,15 +4,16 @@ This document specifies the canonical sensor observation contract, the Recurrent
 
 ---
 
-## 1. Canonical Observation & Action Contract (`426-D` / `2-D`)
+## 1. Canonical Observation & Action Contract (`490-D` / `2-D`)
 
 Defined in `ackerman_follow/config.py` (`RobotConfig`):
 
 | Slice | Name | Dim | Physical Range | Normalized Range | Ordering / Convention |
 | :--- | :--- | :---: | :--- | :--- | :--- |
 | `[0 : 64]` | Front camera depth | `64` | `[0.15, 5.00] m` | `[0.0, 1.0]` | Right-to-left (`-42.5°` to `+42.5°` in REP 103 yaw), matching `cam_angles` in `[-1.0, +1.0]` |
-| `[64 : 424]` | Planar 2D LiDAR | `360` | `[0.10, 3.00] m` | `[0.0, 1.0]` | Counter-clockwise starting from `+X` (`0` to `2π`, `1°` step) |
-| `[424 : 426]` | Proprioception (`v`, `steer`) | `2` | `v ∈ [-0.40, 0.80] m/s`, `δ ∈ [-0.553953, +0.553953] rad` | `[-1.0, 1.0]` | Normalized via `RobotConfig.normalize_state()` / `normalize_action()` |
+| `[64 : 128]` | Front camera RGB target mask | `64` | `{0, 1}` target bbox | `{0.0, 1.0}` | Aligned 1-to-1 with camera depth rays (`1.0` = detected target span, `0.0` = obstacle/empty) |
+| `[128 : 488]` | Planar 2D LiDAR | `360` | `[0.10, 3.00] m` | `[0.0, 1.0]` | Counter-clockwise starting from `+X` (`0` to `2π`, `1°` step) |
+| `[488 : 490]` | Proprioception (`v`, `steer`) | `2` | `v ∈ [-0.40, 0.80] m/s`, `δ ∈ [-0.553953, +0.553953] rad` | `[-1.0, 1.0]` | Normalized via `RobotConfig.normalize_state()` / `normalize_action()` |
 
 * **Normalization:** `norm_range = (clip(d, d_min, d_max) - d_min) / (d_max - d_min)` (`0.0` = closest hit, `1.0` = max/empty range).
 * **Control rate:** `dt = 0.05 s` (`20 Hz`).
@@ -24,7 +25,7 @@ Defined in `ackerman_follow/config.py` (`RobotConfig`):
 
 ```mermaid
 flowchart LR
-    OBS["426-D Obs<br/>(64 cam + 360 lidar + 2 state)"] --> CAM["Cam 1D CoordConv<br/>Max+AvgPool(4) + 6 Polar"]
+    OBS["490-D Obs<br/>(64 depth + 64 target mask + 360 lidar + 2 state)"] --> CAM["Cam 3-Ch CoordConv<br/>Max+AvgPool(4) + 6 Target Polar"]
     OBS --> LID["LiDAR Circular CoordConv<br/>Max+AvgPool(8) + 11 Polar"]
     OBS --> ST["State MLP (2→16)"]
     CAM --> FUSE["Fused Spatial (144→128)"]
@@ -40,8 +41,8 @@ flowchart LR
 Key design choices:
 
 1. **Proximity Inversion (`1.0 - range_norm`):** Converts empty max-range rays to `0.0` and nearby hits to `~1.0` so sparse targets produce strong activations against empty background.
-2. **Thin-Target-Preserving Pooling:** A human leg (`r = 0.09 m`) at `2.0 m` subtends only `~5°` (~4 camera rays / ~5 LiDAR rays). Both CNN encoders concatenate `AdaptiveMaxPool1d` + `AdaptiveAvgPool1d`:
-   * Camera (`64 → 32 → 16` → `MaxPool(4) + AvgPool(4)` → `256-D`) + `6` polar features (`soft_bearing`, `max_prox`, `mean_prox`, symmetric `21 / 22 / 21` right/center/left sector maxima).
+2. **Thin-Target-Preserving Pooling & Target-Locked Attention:** A human leg (`r = 0.09 m`) at `2.0 m` subtends only `~5°` (~4 camera rays / ~5 LiDAR rays). Both CNN encoders concatenate `AdaptiveMaxPool1d` + `AdaptiveAvgPool1d`:
+   * Camera (`3` input channels `[cam_prox, cam_mask, cam_coord]`, `64 → 32 → 16` → `MaxPool(4) + AvgPool(4)` → `256-D`) + `6` target-locked polar features (`target_soft_bearing`, `target_prox`, `target_vis`, symmetric `21 / 22 / 21` right/center/left obstacle maxima).
    * LiDAR (`360 → 120 → 40` via explicit `F.pad(..., mode="circular")` `_CircularConv1d` → `MaxPool(8) + AvgPool(8)` → `512-D`, exact `5`-bin alignment with the 8 angular sectors) + `11` polar features (`soft_cos`, `soft_sin`, `max_prox`, 8-sector maxima).
 3. **MPS- & CUDA-Safe Buffers:** `v_min`, `v_max`, `steer_max`, `v_scale`, `v_bias`, and `steer_scale` are all registered via `register_buffer(...)` from `RobotConfig`, so `.to(device)` moves every scaling constant cleanly.
 4. **Exact `TanhNormal` Log-Prob & Squashed Entropy:**

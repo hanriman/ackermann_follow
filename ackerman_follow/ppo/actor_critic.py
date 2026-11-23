@@ -48,6 +48,7 @@ class ActorCritic(nn.Module):
         obs_dim: int | None = None,
         act_dim: int | None = None,
         cam_dim: int | None = None,
+        cam_mask_dim: int | None = None,
         lidar_dim: int | None = None,
         gru_hidden_dim: int = 128,
         robot_cfg: RobotConfig | None = None,
@@ -56,10 +57,17 @@ class ActorCritic(nn.Module):
         cfg = robot_cfg if robot_cfg is not None else get_robot_config()
         self.robot_cfg = cfg
         self.cam_dim = int(cam_dim if cam_dim is not None else cfg.cam_samples)
+        self.cam_mask_dim = int(
+            cam_mask_dim if cam_mask_dim is not None else cfg.cam_mask_samples
+        )
         self.lidar_dim = int(lidar_dim if lidar_dim is not None else cfg.lidar_samples)
-        self.obs_dim = int(obs_dim if obs_dim is not None else (self.cam_dim + self.lidar_dim + 2))
+        self.obs_dim = int(
+            obs_dim
+            if obs_dim is not None
+            else (self.cam_dim + self.cam_mask_dim + self.lidar_dim + 2)
+        )
         self.act_dim = int(act_dim if act_dim is not None else cfg.act_dim)
-        self.state_dim = self.obs_dim - self.cam_dim - self.lidar_dim  # 2 features (v, steer)
+        self.state_dim = self.obs_dim - self.cam_dim - self.cam_mask_dim - self.lidar_dim  # 2 (v, steer)
         self.gru_hidden_dim = int(gru_hidden_dim)
 
         # Action physical bounds & scaling constants registered as buffers so .to(device) moves all
@@ -82,9 +90,9 @@ class ActorCritic(nn.Module):
         self.register_buffer("lidar_cos", torch.cos(lidar_angles))
         self.register_buffer("lidar_sin", torch.sin(lidar_angles))
 
-        # 1. Front Camera Depth Branch (64 rays -> 1D CoordConv + Max/AvgPool(4) + 6 polar features)
+        # 1. Front RGB-D Camera Branch (64 depth + 64 target mask + angle -> 3-ch CoordConv + 6 polar)
         self.cam_conv = nn.Sequential(
-            layer_init(nn.Conv1d(2, 16, kernel_size=5, stride=2, padding=2)),
+            layer_init(nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)),
             nn.SiLU(),
             layer_init(nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1)),
             nn.SiLU(),
@@ -157,20 +165,26 @@ class ActorCritic(nn.Module):
         return torch.zeros((1, batch_size, self.gru_hidden_dim), dtype=torch.float32, device=device)
 
     def _extract_spatial_features(self, x):
-        """Extract CoordConv + polar soft-argmin features for a flattened batch [N, obs_dim]."""
-        cam_feats = x[:, : self.cam_dim]
-        lidar_feats = x[:, self.cam_dim : self.cam_dim + self.lidar_dim]
-        state_feats = x[:, self.cam_dim + self.lidar_dim :]
+        """Extract CoordConv + target-locked polar soft-argmin features for [N, obs_dim]."""
+        cam_end = self.cam_dim
+        mask_end = cam_end + self.cam_mask_dim
+        lidar_end = mask_end + self.lidar_dim
+
+        cam_feats = x[:, :cam_end]
+        cam_mask = x[:, cam_end:mask_end]
+        lidar_feats = x[:, mask_end:lidar_end]
+        state_feats = x[:, lidar_end:]
 
         # Invert normalized ranges -> proximity (0.0 = empty max-range, 1.0 = close hit)
         cam_prox = 1.0 - cam_feats
         lidar_prox = 1.0 - lidar_feats
 
-        # Differentiable polar soft-argmin & symmetric 3-sector summaries for camera
-        cam_w = torch.softmax(cam_prox * 12.0, dim=-1)
-        cam_soft_bearing = (cam_w * self.cam_angles).sum(dim=-1, keepdim=True)
-        cam_max_prox = cam_prox.max(dim=-1, keepdim=True).values
-        cam_mean_prox = cam_prox.mean(dim=-1, keepdim=True)
+        # Target-locked polar soft-argmin + symmetric 3-sector obstacle proximity
+        cam_target_vis = cam_mask.max(dim=-1, keepdim=True).values
+        cam_w = torch.softmax(cam_mask * 15.0 + cam_prox * 3.0, dim=-1)
+        cam_soft_bearing = (cam_w * self.cam_angles).sum(dim=-1, keepdim=True) * cam_target_vis
+        cam_target_prox = (cam_prox * cam_mask).max(dim=-1, keepdim=True).values
+
         edge = self.cam_dim // 3
         cam_right_prox = cam_prox[:, :edge].max(dim=-1, keepdim=True).values
         cam_center_prox = cam_prox[:, edge : self.cam_dim - edge].max(dim=-1, keepdim=True).values
@@ -178,8 +192,8 @@ class ActorCritic(nn.Module):
         cam_polar = torch.cat(
             [
                 cam_soft_bearing,
-                cam_max_prox,
-                cam_mean_prox,
+                cam_target_prox,
+                cam_target_vis,
                 cam_right_prox,
                 cam_center_prox,
                 cam_left_prox,
@@ -188,7 +202,7 @@ class ActorCritic(nn.Module):
         )
 
         cam_coord = self.cam_angles.unsqueeze(0).expand_as(cam_prox)
-        cam_in = torch.stack([cam_prox, cam_coord], dim=1)  # [N, 2, 64]
+        cam_in = torch.stack([cam_prox, cam_mask, cam_coord], dim=1)  # [N, 3, 64]
         cam_conv_raw = self.cam_conv(cam_in)
         cam_conv_out = torch.cat(
             [
