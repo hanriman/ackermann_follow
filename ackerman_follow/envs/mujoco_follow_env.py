@@ -80,8 +80,8 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             2: 430.0,
             3: 680.0,
             4: 620.0,
-            5: 680.0,
-            6: 620.0,
+            5: 600.0,
+            6: 580.0,
         }
         self.replay_previous_ratio = float(replay_previous_ratio)
         self.sensor_noise = bool(sensor_noise)
