@@ -292,7 +292,14 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), -0.65, 0.65))
             hyaw = float(rng.uniform(-0.15, 0.15))
             speed = float(rng.uniform(0.28, 0.42))
-            self._waypoints = [(4.70, 0.0), (4.70, -3.70), (4.70, 0.0), (1.20, 0.0)]
+            self._waypoints = [
+                (4.70, 0.0),
+                (4.70, -4.10),
+                (6.70, -4.10),
+                (6.70, 2.00),
+                (-0.50, 2.00),
+                (-0.50, 0.0),
+            ]
         else:
             # Stage 4: weave between staggered pillars
             robot_x = float(rng.uniform(-0.25, 0.25))
@@ -301,15 +308,19 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             dist = float(rng.uniform(1.4, 2.3))
             bearing = float(rng.uniform(-0.25, 0.25))
             hx = robot_x + dist * math.cos(robot_yaw + bearing)
-            hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), -0.45, 0.45))
+            hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), -0.25, 0.25))
             hyaw = float(rng.uniform(-0.20, 0.20))
             speed = float(rng.uniform(0.28, 0.42))
             self._waypoints = [
-                (2.85, 0.65),
-                (4.05, -0.45),
-                (5.25, 0.90),
-                (6.40, -0.35),
-                (4.80, -2.80),
+                (2.45, -0.10),
+                (2.80, 0.85),
+                (3.55, 1.05),
+                (4.45, 0.15),
+                (5.25, -0.75),
+                (6.40, -0.40),
+                (4.80, -2.50),
+                (0.80, -2.20),
+                (0.80, 0.00),
             ]
 
         self.data.qpos[self._robot_free_qpos : self._robot_free_qpos + 3] = [
@@ -603,9 +614,13 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             max_delta = max(1e-6, self.cfg.max_steering_rate * self.cfg.dt)
             steer_smooth_pen = -0.05 * ((self._steer_cmd - self._prev_steer_cmd) / max_delta) ** 2
 
-            # Penalize reversing away when already outside target follow distance
+            # Penalize reversing away only when target is ahead (allow K-turns when target is behind)
             rev_frac = max(0.0, -v_cmd / abs(self.cfg.v_min))
-            far_rev_mult = 5.0 if dist > (self.cfg.target_follow_distance + 0.15) else 1.0
+            far_rev_mult = (
+                5.0
+                if (dist > (self.cfg.target_follow_distance + 0.15) and abs(bearing) < 1.2)
+                else 1.0
+            )
             reverse_pen = -0.08 * far_rev_mult * rev_frac
 
             clearance_pen = -0.40 * max(0.0, (0.35 - min_lidar) / 0.35)

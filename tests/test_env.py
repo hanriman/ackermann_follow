@@ -180,9 +180,9 @@ def test_human_overstep_does_not_terminate_and_stage2_fov_spawn():
         _, rew_fwd, _, _, _ = env.step(np.array([0.80, 0.0], dtype=np.float32))
         assert rew_fwd > rew_rev
 
-        # 4. Stage 3 corridor bend around x=3.6..5.8 is open and target stays inside clear corridor
+        # 4. Stage 3 & Stage 4 trajectories never intersect walls/pillars across full 600-step episodes
         env.reset(seed=12, options={"stage": 3})
-        for _ in range(300):
+        for _ in range(600):
             base._step_human_target()
             tx, ty = base.target.x, base.target.y
             # Ensure target never intersects Stage 3 wall boxes
@@ -190,6 +190,44 @@ def test_human_overstep_does_not_terminate_and_stage2_fov_spawn():
             assert not (0.30 <= tx <= 3.60 and -1.22 <= ty <= -0.98)  # s3_corr_right_1
             assert not (3.48 <= tx <= 3.72 and -3.30 <= ty <= -1.00)  # s3_corr_left_2
             assert not (5.68 <= tx <= 5.92 and -3.30 <= ty <= 1.20)  # s3_corr_right_2
+
+        env.reset(seed=14, options={"stage": 4})
+        pillars = [
+            (1.80, 0.85), (2.30, -0.95), (3.40, 0.15), (4.30, 1.45),
+            (4.60, -1.25), (5.70, 0.35), (-1.20, 1.60), (-1.40, -1.60),
+        ]
+        for _ in range(600):
+            base._step_human_target()
+            tx, ty = base.target.x, base.target.y
+            for px, py in pillars:
+                assert np.hypot(tx - px, ty - py) > 0.45
+
+        # 5. Bearing-gated reverse penalty: reversing toward a target behind has smaller penalty than away in front
+        def _eval_rev_delta(tx: float) -> float:
+            env.reset(seed=99, options={"stage": 1})
+            base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [0.0, 0.0, 0.0]
+            base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
+            base.target.x, base.target.y, base.target.speed = tx, 0.0, 0.0
+            base._sync_human_mocap()
+            mujoco.mj_forward(base.model, base.data)
+            dist0, bear0, _ = base._compute_target_metrics()
+            base._prev_dist_err = abs(dist0 - base.cfg.target_follow_distance)
+            base._prev_abs_bearing = abs(bear0)
+            _, rew_rev, _, _, _ = env.step(np.array([-0.40, 0.0], dtype=np.float32))
+
+            env.reset(seed=99, options={"stage": 1})
+            base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [0.0, 0.0, 0.0]
+            base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
+            base.target.x, base.target.y, base.target.speed = tx, 0.0, 0.0
+            base._sync_human_mocap()
+            mujoco.mj_forward(base.model, base.data)
+            dist0, bear0, _ = base._compute_target_metrics()
+            base._prev_dist_err = abs(dist0 - base.cfg.target_follow_distance)
+            base._prev_abs_bearing = abs(bear0)
+            _, rew_stop, _, _, _ = env.step(np.array([0.0, 0.0], dtype=np.float32))
+            return rew_rev - rew_stop
+
+        assert _eval_rev_delta(-2.0) > _eval_rev_delta(2.0)
     finally:
         env.close()
 
