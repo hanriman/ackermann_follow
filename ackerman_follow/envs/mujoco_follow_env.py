@@ -78,10 +78,10 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         self.stage_thresholds = stage_thresholds or {
             1: 540.0,
             2: 430.0,
-            3: 820.0,
-            4: 650.0,
-            5: 720.0,
-            6: 650.0,
+            3: 680.0,
+            4: 620.0,
+            5: 680.0,
+            6: 620.0,
         }
         self.replay_previous_ratio = float(replay_previous_ratio)
         self.sensor_noise = bool(sensor_noise)
@@ -338,7 +338,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
                 speed = float(rng.uniform(0.40, 0.58))
             else:
                 speed = float(rng.uniform(0.32, 0.46))
-            lane_shift = float(rng.choice([-0.25, 0.0, 0.35]))
+            lane_shift = float(rng.choice([0.0, 0.25, 0.55]))
             self._waypoints = [
                 (5.25 + lane_shift, 1.15 + lane_shift),
                 (5.25 + lane_shift, -3.05 - lane_shift),
@@ -826,10 +826,12 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             # Anti-freeze penalty: discourage standing still when target is lost out of FOV
             idle_lost_pen = -0.18 if (not in_fov and abs(v_fwd) < 0.10) else 0.0
 
-            # Protect front wheels (~0.39m from rear LiDAR) with wider LiDAR + front cam clearance
-            lidar_clear_pen = -0.50 * max(0.0, (0.58 - min_lidar) / 0.58)
-            front_clear_pen = -0.45 * max(0.0, (0.45 - self._last_min_front_cam) / 0.45)
-            clearance_pen = lidar_clear_pen + front_clear_pen
+            # Protect front wheels (~0.39m from rear LiDAR) with steep close-wall gradient
+            lidar_lin = max(0.0, (0.62 - min_lidar) / 0.62)
+            lidar_quad = max(0.0, (0.52 - min_lidar) / 0.52) ** 2
+            front_lin = max(0.0, (0.50 - self._last_min_front_cam) / 0.50)
+            front_quad = max(0.0, (0.42 - self._last_min_front_cam) / 0.42) ** 2
+            clearance_pen = -(0.55 * lidar_lin + 1.50 * lidar_quad + 0.45 * front_lin + 1.00 * front_quad)
             personal_space_pen = -0.25 * max(0.0, (0.35 - dist) / 0.35)
 
             reward = (

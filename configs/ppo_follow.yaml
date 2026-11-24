@@ -1,6 +1,6 @@
 # PPO Hyperparameters for AckBot Target Following (Recurrent Spatial PPO)
 algorithm:
-  total_timesteps: 1500000      # Extended environment steps across 7-stage curriculum
+  total_timesteps: 1200000      # Extended environment steps for Stages 3-7 + replay
   num_envs: 8                   # Parallel environments per rollout
   n_steps: 512                  # Rollout horizon per env (8 * 512 = 4096 transitions/iter)
   seq_len: 64                   # Sequence chunk length for recurrent GRU BPTT (3.2 s)
@@ -23,10 +23,10 @@ curriculum:
   stage_thresholds:
     1: { min_return: 540.0 }
     2: { min_return: 430.0 }
-    3: { min_return: 820.0 }
-    4: { min_return: 650.0 }
-    5: { min_return: 720.0 }
-    6: { min_return: 650.0 }
+    3: { min_return: 680.0 }
+    4: { min_return: 620.0 }
+    5: { min_return: 680.0 }
+    6: { min_return: 620.0 }
   replay_previous_ratio: 0.45
 
 evaluation:
