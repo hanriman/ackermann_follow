@@ -21,12 +21,12 @@ curriculum:
   enabled: true
   min_episodes_per_stage: 35
   stage_thresholds:
-    1: { min_return: 750.0 }
-    2: { min_return: 550.0 }
-    3: { min_return: 1100.0 }
-    4: { min_return: 850.0 }
-    5: { min_return: 850.0 }
-    6: { min_return: 750.0 }
+    1: { min_return: 540.0 }
+    2: { min_return: 430.0 }
+    3: { min_return: 820.0 }
+    4: { min_return: 650.0 }
+    5: { min_return: 720.0 }
+    6: { min_return: 650.0 }
   replay_previous_ratio: 0.45
 
 evaluation:

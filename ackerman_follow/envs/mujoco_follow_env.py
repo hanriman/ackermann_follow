@@ -76,12 +76,12 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         self.auto_curriculum = bool(auto_curriculum)
         self.min_episodes_per_stage = int(min_episodes_per_stage)
         self.stage_thresholds = stage_thresholds or {
-            1: 750.0,
-            2: 550.0,
-            3: 1100.0,
-            4: 850.0,
-            5: 850.0,
-            6: 750.0,
+            1: 540.0,
+            2: 430.0,
+            3: 820.0,
+            4: 650.0,
+            5: 720.0,
+            6: 650.0,
         }
         self.replay_previous_ratio = float(replay_previous_ratio)
         self.sensor_noise = bool(sensor_noise)
