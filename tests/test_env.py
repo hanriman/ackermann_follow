@@ -114,15 +114,14 @@ def test_ackermann_turning_and_inner_wheel_clearance():
 def test_stage_switching_and_collision_termination():
     env = gym.make("AckermanFollow-v0")
     try:
-        for stg in (1, 2, 3, 4):
+        for stg in (1, 2, 3, 4, 5, 6, 7):
             obs, info = env.reset(seed=100 + stg, options={"stage": stg})
             assert info["stage"] == stg
             assert obs.shape == (490,)
 
-        # In Stage 4, place robot directly moving into pillar_3 at (3.40, 0.15) or drive into Stage 2 L-wall
+        # Drive straight forward into Stage 3 L-wall (s3_lwall_a at x=2.80, y in [-2.3, 0.5])
         base = env.unwrapped
-        base.reset(seed=5, options={"stage": 2})
-        # Drive straight forward into Stage 2 L-wall (s2_lwall_a at x=2.80, y in [-2.3, 0.5])
+        base.reset(seed=5, options={"stage": 3})
         base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [1.8, -0.3, 0.0]
         base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
         mujoco.mj_forward(base.model, base.data)
@@ -145,16 +144,27 @@ def test_human_overstep_does_not_terminate_and_stage2_fov_spawn():
     try:
         base = env.unwrapped
 
-        # 1. Stage 2 spawns must stay inside camera FOV across varied seeds and have 900-step horizon
+        # 1. Stage 3 (open L-wall) spans close and far pre-corner spawns with 800-step horizon
         dists = []
         for s in range(20):
-            _, info = env.reset(seed=200 + s, options={"stage": 2})
-            assert base.max_steps == 900
+            _, info = env.reset(seed=200 + s, options={"stage": 3})
+            assert base.max_steps == 800
             assert info["target_in_fov"] is True
             dists.append(info["target_dist"])
-        assert max(dists) - min(dists) > 1.0  # spans close and near-corner urgent spawns
+        assert max(dists) - min(dists) > 1.0
 
-        # 2. Human target stepping over robot must NOT terminate or physically stop robot
+        # 2. Stage 2 (straight corridor) has 450-step horizon, clears walls, and never turns around
+        env.reset(seed=250, options={"stage": 2, "force_front_spawn": True})
+        assert base.max_steps == 450
+        assert base._allow_reversals is False
+        prev_tx = base.target.x
+        for _ in range(450):
+            base._step_human_target()
+            assert abs(base.target.y) < 1.15
+            assert base.target.x >= prev_tx - 1e-4
+            prev_tx = base.target.x
+
+        # 3. Human target stepping over robot must NOT terminate or physically stop robot
         env.reset(seed=42, options={"stage": 1})
         base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [0.0, 0.0, 0.0]
         base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
@@ -171,40 +181,29 @@ def test_human_overstep_does_not_terminate_and_stage2_fov_spawn():
             assert np.isfinite(obs).all()
 
         rx, _, _, _, _ = base._get_robot_pose_and_vel()
-        assert rx > 0.9  # robot drove cleanly past the human's position without collision
+        assert rx > 0.9
 
-        # 3. Reversing away when far (> 1.0 m) earns less reward than driving forward toward target
-        env.reset(seed=99, options={"stage": 3})
+        # 4. Reversing away when far (> 1.0 m) earns less reward than driving forward toward target
+        env.reset(seed=99, options={"stage": 4, "force_front_spawn": True})
         _, rew_rev, _, _, _ = env.step(np.array([-0.40, 0.0], dtype=np.float32))
-        env.reset(seed=99, options={"stage": 3})
+        env.reset(seed=99, options={"stage": 4, "force_front_spawn": True})
         _, rew_fwd, _, _, _ = env.step(np.array([0.80, 0.0], dtype=np.float32))
         assert rew_fwd > rew_rev
 
-        # 4. Stage 3 & Stage 4 trajectories never intersect walls/pillars across full 600-step episodes
-        env.reset(seed=12, options={"stage": 3})
-        for _ in range(600):
+        # 5. Stage 4 (L-turn inside corridor) trajectories never intersect walls across 700 steps
+        env.reset(seed=12, options={"stage": 4, "force_front_spawn": True})
+        base._adaptive_pacing = False
+        for _ in range(700):
             base._step_human_target()
             tx, ty = base.target.x, base.target.y
-            # Ensure target never intersects Stage 3 wall boxes
-            assert not (0.30 <= tx <= 5.90 and 0.98 <= ty <= 1.22)  # s3_corr_left_1
-            assert not (0.30 <= tx <= 3.60 and -1.22 <= ty <= -0.98)  # s3_corr_right_1
-            assert not (3.48 <= tx <= 3.72 and -3.30 <= ty <= -1.00)  # s3_corr_left_2
-            assert not (5.68 <= tx <= 5.92 and -3.30 <= ty <= 1.20)  # s3_corr_right_2
+            assert not (0.30 <= tx <= 5.90 and 0.98 <= ty <= 1.22)  # s4_corr_left_1
+            assert not (0.30 <= tx <= 3.60 and -1.22 <= ty <= -0.98)  # s4_corr_right_1
+            assert not (3.48 <= tx <= 3.72 and -3.30 <= ty <= -1.00)  # s4_corr_left_2
+            assert not (5.68 <= tx <= 5.92 and -3.30 <= ty <= 1.20)  # s4_corr_right_2
 
-        env.reset(seed=14, options={"stage": 4})
-        pillars = [
-            (1.80, 0.85), (2.30, -0.95), (3.40, 0.15), (4.30, 1.45),
-            (4.60, -1.25), (5.70, 0.35), (-1.20, 1.60), (-1.40, -1.60),
-        ]
-        for _ in range(600):
-            base._step_human_target()
-            tx, ty = base.target.x, base.target.y
-            for px, py in pillars:
-                assert np.hypot(tx - px, ty - py) > 0.45
-
-        # 5. Bearing-gated reverse penalty: reversing toward a target behind has smaller penalty than away in front
+        # 6. Bearing-gated reverse penalty: reversing toward a target behind has smaller penalty than away in front
         def _eval_rev_delta(tx: float) -> float:
-            env.reset(seed=99, options={"stage": 1})
+            env.reset(seed=99, options={"stage": 1, "force_front_spawn": True})
             base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [0.0, 0.0, 0.0]
             base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
             base.target.x, base.target.y, base.target.speed = tx, 0.0, 0.0
@@ -215,7 +214,7 @@ def test_human_overstep_does_not_terminate_and_stage2_fov_spawn():
             base._prev_abs_bearing = abs(bear0)
             _, rew_rev, _, _, _ = env.step(np.array([-0.40, 0.0], dtype=np.float32))
 
-            env.reset(seed=99, options={"stage": 1})
+            env.reset(seed=99, options={"stage": 1, "force_front_spawn": True})
             base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [0.0, 0.0, 0.0]
             base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
             base.target.x, base.target.y, base.target.speed = tx, 0.0, 0.0
@@ -331,25 +330,42 @@ def test_stage5_dead_end_road_walk_past_and_cap_collision():
         env.close()
 
 
-def test_stage6_combined_lturn_deadend_and_collision():
+def test_stage6_middle_dead_end_and_stage7_lturn_deadend():
     env = gym.make("AckermanFollow-v0")
     try:
         base = env.unwrapped
-        obs, info = env.reset(seed=601, options={"stage": 6, "force_front_spawn": True})
-        assert info["stage"] == 6
-        assert base.max_steps == 900
-        assert obs.shape == (490,)
 
-        # Human walks Open -> L-Turn -> Dead-End Wing -> 180 back cleanly at nominal speed
+        # Stage 6: dead-end middle walk shares dead-end road and completes 180 return
+        obs6, info6 = env.reset(seed=601, options={"stage": 6, "force_front_spawn": True})
+        assert info6["stage"] == 6
+        assert base.max_steps == 750
+        assert obs6.shape == (490,)
+        base._adaptive_pacing = False
+        max_x6, min_x6 = -999.0, 999.0
+        for _ in range(750):
+            base._step_human_target()
+            tx, ty = base.target.x, base.target.y
+            max_x6 = max(max_x6, tx)
+            min_x6 = min(min_x6, tx)
+            assert not (-1.00 <= tx <= 4.90 and 1.18 <= abs(ty) <= 1.42)
+            assert not (4.68 <= tx <= 4.92 and abs(ty) <= 1.40)
+        assert max_x6 > 3.5
+        assert min_x6 < 0.0
+
+        # Stage 7: Open -> L-Turn -> Dead-End Wing -> 180 back cleanly at nominal speed
+        obs7, info7 = env.reset(seed=701, options={"stage": 7, "force_front_spawn": True})
+        assert info7["stage"] == 7
+        assert base.max_steps == 950
+        assert obs7.shape == (490,)
         base._adaptive_pacing = False
         max_x, min_x, min_y = -999.0, 999.0, 999.0
-        for _ in range(900):
+        for _ in range(950):
             base._step_human_target()
             tx, ty = base.target.x, base.target.y
             max_x = max(max_x, tx)
             min_x = min(min_x, tx)
             min_y = min(min_y, ty)
-            # Clear of Stage 6 box walls
+            # Clear of Stage 7 box walls
             assert not (2.50 <= tx <= 5.80 and 1.15 <= ty <= 1.35)
             assert not (5.60 <= tx <= 5.80 and -4.30 <= ty <= 1.35)
             assert not (2.20 <= tx <= 3.30 and -1.35 <= ty <= -1.15)
@@ -360,10 +376,9 @@ def test_stage6_combined_lturn_deadend_and_collision():
         assert min_y < -2.8
         assert min_x < 2.0
 
-        # Driving robot into s6_deadend_cap at y=-4.20 triggers collision
-        env.reset(seed=602, options={"stage": 6, "force_front_spawn": True})
+        # Driving robot into s7_deadend_cap at y=-4.20 triggers collision
+        env.reset(seed=702, options={"stage": 7, "force_front_spawn": True})
         base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [4.5, -3.2, 0.0]
-        # yaw = -pi/2 -> q = [cos(-pi/4), 0, 0, sin(-pi/4)]
         base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [
             np.cos(-np.pi / 4.0),
             0.0,
@@ -385,10 +400,11 @@ def test_stage6_combined_lturn_deadend_and_collision():
         env.close()
 
 
-def test_force_lost_spawn_and_anti_freeze_penalty():
+def test_force_lost_spawn_anti_freeze_clearance_and_sensor_noise():
     env = gym.make("AckermanFollow-v0")
+    env_noisy = gym.make("AckermanFollow-v0", sensor_noise=True)
     try:
-        for stg in (1, 4, 5):
+        for stg in (1, 5, 6):
             obs, info = env.reset(seed=700 + stg, options={"stage": stg, "force_lost_spawn": True})
             assert np.all(np.isfinite(obs))
             assert info["target_in_fov"] is False
@@ -403,5 +419,12 @@ def test_force_lost_spawn_and_anti_freeze_penalty():
         _, r_move, _, _, _ = env.step(np.array([0.50, turn_steer], dtype=np.float32))
 
         assert r_idle < r_move
+
+        # Sensor noise stays within observation bounds and perturbs raw readings
+        obs_clean, _ = env.reset(seed=808, options={"stage": 3, "force_front_spawn": True})
+        obs_noisy, _ = env_noisy.reset(seed=808, options={"stage": 3, "force_front_spawn": True})
+        assert env_noisy.observation_space.contains(obs_noisy)
+        assert not np.allclose(obs_clean, obs_noisy)
     finally:
         env.close()
+        env_noisy.close()

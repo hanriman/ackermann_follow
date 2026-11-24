@@ -97,8 +97,20 @@ def parse_args():
         "--start-stage",
         type=int,
         default=1,
-        choices=[1, 2, 3, 4, 5, 6],
-        help="Starting curriculum stage (1..6)",
+        choices=[1, 2, 3, 4, 5, 6, 7],
+        help="Starting curriculum stage (1..7)",
+    )
+    parser.add_argument(
+        "--sensor-noise",
+        action="store_true",
+        default=True,
+        help="Enable mild sensory & dynamics randomization during training rollouts",
+    )
+    parser.add_argument(
+        "--no-sensor-noise",
+        action="store_false",
+        dest="sensor_noise",
+        help="Disable sensory & dynamics randomization during training rollouts",
     )
     parser.add_argument(
         "--warm-start",
@@ -141,6 +153,7 @@ class _EnvFactory:
         stage_thresholds: dict[int, float],
         replay_previous_ratio: float,
         worker_threads: int | None = None,
+        sensor_noise: bool = True,
     ) -> None:
         self.auto_curriculum = auto_curriculum
         self.start_stage = start_stage
@@ -148,6 +161,7 @@ class _EnvFactory:
         self.stage_thresholds = stage_thresholds
         self.replay_previous_ratio = replay_previous_ratio
         self.worker_threads = worker_threads
+        self.sensor_noise = sensor_noise
 
     def __call__(self):
         if self.worker_threads is not None:
@@ -159,6 +173,7 @@ class _EnvFactory:
             min_episodes_per_stage=self.min_episodes_per_stage,
             stage_thresholds=self.stage_thresholds,
             replay_previous_ratio=self.replay_previous_ratio,
+            sensor_noise=self.sensor_noise,
         )
         return _VectorSafeInfoWrapper(base_env)
 
@@ -350,6 +365,7 @@ def main():
                 "s4_rew",
                 "s5_rew",
                 "s6_rew",
+                "s7_rew",
             ]
         )
         csv_file.flush()
@@ -388,6 +404,7 @@ def main():
                 stage_thresholds=stage_thresholds,
                 replay_previous_ratio=replay_previous_ratio,
                 worker_threads=worker_threads,
+                sensor_noise=args.sensor_noise,
             )
             for _ in range(num_envs)
         ]
@@ -547,7 +564,7 @@ def main():
                                 if (
                                     thresh is not None
                                     and mean_frontier >= thresh
-                                    and current_unlocked < 6
+                                    and current_unlocked < 7
                                 ):
                                     grad_stage = current_unlocked
                                     current_unlocked += 1
@@ -718,6 +735,7 @@ def main():
             s4_val = ""
             s5_val = ""
             s6_val = ""
+            s7_val = ""
 
             if global_step % eval_freq < steps_per_iter or iteration == num_iterations:
                 eval_stages = tuple(range(1, max(4, current_unlocked) + 1))
@@ -764,6 +782,7 @@ def main():
                 s4_val = f"{s_breakdown[4]['mean_reward']:.1f}"
                 s5_val = f"{s_breakdown[5]['mean_reward']:.1f}" if 5 in s_breakdown else ""
                 s6_val = f"{s_breakdown[6]['mean_reward']:.1f}" if 6 in s_breakdown else ""
+                s7_val = f"{s_breakdown[7]['mean_reward']:.1f}" if 7 in s_breakdown else ""
 
                 stg_summary = " | ".join(
                     [
@@ -824,6 +843,7 @@ def main():
                     s4_val,
                     s5_val,
                     s6_val,
+                    s7_val,
                 ]
             )
             csv_file.flush()

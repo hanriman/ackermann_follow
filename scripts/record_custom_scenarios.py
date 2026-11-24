@@ -63,6 +63,9 @@ def _set_custom_pose(
     env.max_steps = int(max_steps)
     env._adaptive_pacing = bool(adaptive_pacing)
     env._allow_pauses = False
+    env._allow_reversals = False
+    env._wp_dir = 1
+    env._wp_loop = True
     env._speed_mult = 1.0
     env._behavior_timer = int(max_steps) + 100
     env.data.qpos[env._robot_free_qpos : env._robot_free_qpos + 3] = [rx, ry, 0.0]
@@ -180,8 +183,8 @@ def main() -> None:
 
     env_std = MuJoCoAckermanFollowEnv()
     try:
-        # 1. Open -> L-Turn -> Dead End -> 180 back to initial position (native Stage 6 geometry)
-        env_std.reset(seed=101, options={"stage": 6, "force_front_spawn": True})
+        # 1. Open -> L-Turn -> Dead End -> 180 back to initial position (native Stage 7 geometry)
+        env_std.reset(seed=101, options={"stage": 7, "force_front_spawn": True})
         obs1 = _set_custom_pose(
             env_std,
             robot_pose=(0.0, 0.0, 0.0),
@@ -195,7 +198,7 @@ def main() -> None:
                 (1.50, 0.35),
                 (0.0, 0.0),
             ],
-            max_steps=850,
+            max_steps=950,
             adaptive_pacing=True,
         )
         s1, r1, c1 = _run_and_write_clip(
@@ -205,8 +208,8 @@ def main() -> None:
         )
         print(f"Cond 1: steps={s1}, return={r1:+.2f}, collision={c1}")
 
-        # 2. Far car + human right at L-turn corner about to hide beside the wall
-        env_std.reset(seed=202, options={"stage": 2, "force_front_spawn": True})
+        # 2. Far car + human right at L-turn corner about to hide beside the wall (native Stage 3)
+        env_std.reset(seed=202, options={"stage": 3, "force_front_spawn": True})
         obs2 = _set_custom_pose(
             env_std,
             robot_pose=(0.0, 1.15, 0.0),
@@ -274,6 +277,29 @@ def main() -> None:
             obs3b, proc.stdin, font_title,
         )
         print(f"Cond 3B: steps={s3b}, return={r3b:+.2f}, collision={c3b}")
+
+        # 4. Dead-end U-turn: human walks straight down the middle (native Stage 6)
+        env_std.reset(seed=505, options={"stage": 6, "force_front_spawn": True})
+        obs4 = _set_custom_pose(
+            env_std,
+            robot_pose=(0.0, 0.0, 0.0),
+            human_pose=(1.7, 0.0, 0.0, 0.36),
+            waypoints=[
+                (3.85, 0.00),
+                (4.20, 0.00),
+                (1.60, 0.10),
+                (-2.20, 0.00),
+                (-4.50, -1.20),
+            ],
+            max_steps=750,
+            adaptive_pacing=True,
+        )
+        s4, r4, c4 = _run_and_write_clip(
+            env_std, model, device, renderer,
+            "4: Dead-End Middle Walk -> 180 Return",
+            obs4, proc.stdin, font_title,
+        )
+        print(f"Cond 4: steps={s4}, return={r4:+.2f}, collision={c4}")
     finally:
         env_std.close()
 
