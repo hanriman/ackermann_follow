@@ -94,7 +94,11 @@ def parse_args():
         help="Disable curriculum progression",
     )
     parser.add_argument(
-        "--start-stage", type=int, default=1, choices=[1, 2, 3, 4], help="Starting curriculum stage"
+        "--start-stage",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 4, 5],
+        help="Starting curriculum stage (1..5)",
     )
     parser.add_argument(
         "--warm-start",
@@ -712,11 +716,12 @@ def main():
             s4_val = ""
 
             if global_step % eval_freq < steps_per_iter or iteration == num_iterations:
+                eval_stages = (1, 2, 3, 4, 5) if current_unlocked >= 5 else (1, 2, 3, 4)
                 eval_metrics = evaluate_policy(
                     model,
                     eval_env,
                     n_episodes_per_stage=n_eval_episodes,
-                    stages=(1, 2, 3, 4),
+                    stages=eval_stages,
                     device=device,
                 )
                 writer.add_scalar("eval/composite_reward", eval_metrics["mean_reward"], global_step)
@@ -757,7 +762,7 @@ def main():
                 stg_summary = " | ".join(
                     [
                         f"S{s}:{s_breakdown[s]['mean_reward']:+.1f}(FOV {s_breakdown[s]['fov_rate']*100:.0f}%)"
-                        for s in (1, 2, 3, 4)
+                        for s in eval_stages
                     ]
                 )
                 print("-" * 68)

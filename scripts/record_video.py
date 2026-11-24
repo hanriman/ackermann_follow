@@ -40,8 +40,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         nargs="+",
         default=[1, 2],
-        choices=[1, 2, 3, 4],
-        help="Curriculum stages to record sequentially into the output video",
+        choices=[1, 2, 3, 4, 5],
+        help="Stages to record sequentially into the output video (1..5)",
     )
     parser.add_argument(
         "--output",

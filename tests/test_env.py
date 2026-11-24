@@ -287,3 +287,45 @@ def test_eval_policy_loads_checkpoint_and_runs(tmp_path):
     for stg_res in results.values():
         assert stg_res["mean_length"] >= 1.0
         assert np.isfinite(stg_res["mean_reward"])
+
+
+def test_stage5_dead_end_road_walk_past_and_cap_collision():
+    env = gym.make("AckermanFollow-v0")
+    try:
+        base = env.unwrapped
+        obs, info = env.reset(seed=501, options={"stage": 5})
+        assert info["stage"] == 5
+        assert base.max_steps == 700
+        assert obs.shape == (490,)
+
+        # Human walks down dead end (> 3.5 m), turns 180 deg, and returns past car (< 0.0 m) cleanly
+        max_x, min_x = -999.0, 999.0
+        for _ in range(700):
+            base._step_human_target()
+            tx, ty = base.target.x, base.target.y
+            max_x = max(max_x, tx)
+            min_x = min(min_x, tx)
+            # Never intersects dead-end side walls or end cap
+            assert not (-1.00 <= tx <= 4.90 and 1.18 <= abs(ty) <= 1.42)
+            assert not (4.68 <= tx <= 4.92 and abs(ty) <= 1.40)
+
+        assert max_x > 3.5
+        assert min_x < 0.0
+
+        # Driving robot forward into dead-end cap at x=4.80 triggers collision termination
+        env.reset(seed=502, options={"stage": 5})
+        base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [3.8, 0.0, 0.0]
+        base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
+        mujoco.mj_forward(base.model, base.data)
+
+        collided = False
+        for _ in range(60):
+            _, reward, terminated, _, step_info = env.step(np.array([0.80, 0.0], dtype=np.float32))
+            if terminated:
+                collided = True
+                assert step_info["collision"] is True
+                assert reward == -25.0
+                break
+        assert collided
+    finally:
+        env.close()

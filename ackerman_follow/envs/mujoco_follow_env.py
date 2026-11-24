@@ -49,7 +49,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 20}
 
-    DEFAULT_STAGE_MAX_STEPS = {1: 500, 2: 900, 3: 600, 4: 600}
+    DEFAULT_STAGE_MAX_STEPS = {1: 500, 2: 900, 3: 600, 4: 600, 5: 700}
 
     def __init__(
         self,
@@ -67,10 +67,10 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         self.render_mode = render_mode
         self.cfg = robot_cfg if robot_cfg is not None else get_robot_config()
         self._fixed_max_steps = int(max_steps) if max_steps is not None else None
-        self.max_steps = self._fixed_max_steps or self.DEFAULT_STAGE_MAX_STEPS[int(np.clip(stage, 1, 4))]
+        self.max_steps = self._fixed_max_steps or self.DEFAULT_STAGE_MAX_STEPS[int(np.clip(stage, 1, 5))]
 
         # Curriculum configuration (synchronized via train_ppo.py)
-        self.unlocked_stage = int(np.clip(stage, 1, 4))
+        self.unlocked_stage = int(np.clip(stage, 1, 5))
         self.stage = self.unlocked_stage
         self.auto_curriculum = bool(auto_curriculum)
         self.min_episodes_per_stage = int(min_episodes_per_stage)
@@ -197,6 +197,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             (2, "stage2_obstacles"),
             (3, "stage3_obstacles"),
             (4, "stage4_obstacles"),
+            (5, "stage5_obstacles"),
         ):
             bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, bname)
             self._stage_bodies[stg] = bid
@@ -213,7 +214,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
     def set_unlocked_stage(self, unlocked_stage: int) -> None:
         """Synchronize the maximum unlocked curriculum stage from the PPO trainer."""
-        self.unlocked_stage = int(np.clip(unlocked_stage, 1, 4))
+        self.unlocked_stage = int(np.clip(unlocked_stage, 1, 5))
 
     def _apply_stage_geometry(self, stage: int) -> None:
         """Enable only the active stage's obstacle geoms and hide others underground."""
@@ -226,7 +227,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
     def _sample_stage(self, options: dict[str, Any] | None) -> int:
         if options and "stage" in options and options["stage"] is not None:
-            return int(np.clip(int(options["stage"]), 1, 4))
+            return int(np.clip(int(options["stage"]), 1, 5))
         if not self.auto_curriculum or self.unlocked_stage <= 1:
             return self.unlocked_stage
         if float(self.np_random.random()) < self.replay_previous_ratio:
@@ -300,7 +301,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
                 (-0.50, 2.00),
                 (-0.50, 0.0),
             ]
-        else:
+        elif stage == 4:
             # Stage 4: weave between staggered pillars
             robot_x = float(rng.uniform(-0.25, 0.25))
             robot_y = float(rng.uniform(-0.30, 0.30))
@@ -321,6 +322,27 @@ class MuJoCoAckermanFollowEnv(gym.Env):
                 (4.80, -2.50),
                 (0.80, -2.20),
                 (0.80, 0.00),
+            ]
+        else:
+            # Stage 5: dead-end road where target turns 180 deg and walks back past the car
+            robot_x = float(rng.uniform(-0.30, 0.20))
+            robot_y = float(rng.uniform(-0.35, 0.35))
+            robot_yaw = float(rng.uniform(-0.15, 0.15))
+            dist = float(rng.uniform(1.4, 2.1))
+            bearing = float(rng.uniform(-0.20, 0.20))
+            hx = robot_x + dist * math.cos(robot_yaw + bearing)
+            hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), -0.45, 0.45))
+            hyaw = float(rng.uniform(-0.15, 0.15))
+            speed = float(rng.uniform(0.30, 0.40))
+            pass_side = float(rng.choice([-1.0, 1.0]))
+            self._waypoints = [
+                (3.85, 0.15 * pass_side),
+                (4.05, 0.60 * pass_side),
+                (1.80, 0.70 * pass_side),
+                (-2.20, 0.50 * pass_side),
+                (-4.80, -1.50 * pass_side),
+                (-2.40, -2.50 * pass_side),
+                (-1.40, 0.0),
             ]
 
         self.data.qpos[self._robot_free_qpos : self._robot_free_qpos + 3] = [

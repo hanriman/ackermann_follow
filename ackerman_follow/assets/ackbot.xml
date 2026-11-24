@@ -38,6 +38,7 @@
     <material name="stage2_mat" rgba="0.28 0.48 0.68 1"/>
     <material name="stage3_mat" rgba="0.30 0.58 0.45 1"/>
     <material name="stage4_mat" rgba="0.72 0.42 0.25 1"/>
+    <material name="stage5_mat" rgba="0.58 0.30 0.58 1"/>
     <material name="human_shirt_mat" rgba="0.15 0.30 0.65 1"/>
     <material name="human_pants_mat" rgba="0.18 0.20 0.25 1"/>
     <material name="human_skin_mat" rgba="0.85 0.70 0.58 1"/>
@@ -81,6 +82,13 @@
       <geom name="s4_pillar_6" class="world_static" type="cylinder" pos="5.70 0.35 0.40" size="0.16 0.40" material="stage4_mat"/>
       <geom name="s4_pillar_7" class="world_static" type="cylinder" pos="-1.20 1.60 0.40" size="0.16 0.40" material="stage4_mat"/>
       <geom name="s4_pillar_8" class="world_static" type="cylinder" pos="-1.40 -1.60 0.40" size="0.16 0.40" material="stage4_mat"/>
+    </body>
+
+    <!-- Stage 5: Dead-End Road (2.40m clear width, open exit at x < -1.0) -->
+    <body name="stage5_obstacles" pos="0 0 -5">
+      <geom name="s5_deadend_left" class="world_static" type="box" pos="1.95 1.30 0.40" size="2.95 0.10 0.40" material="stage5_mat"/>
+      <geom name="s5_deadend_right" class="world_static" type="box" pos="1.95 -1.30 0.40" size="2.95 0.10 0.40" material="stage5_mat"/>
+      <geom name="s5_deadend_cap" class="world_static" type="box" pos="4.80 0.00 0.40" size="0.10 1.40 0.40" material="stage5_mat"/>
     </body>
 
     <!-- Bipedal Human Target (3 mocap bodies driven by BipedalHumanTarget) -->
