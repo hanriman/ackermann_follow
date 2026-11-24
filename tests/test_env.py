@@ -293,14 +293,14 @@ def test_stage5_dead_end_road_walk_past_and_cap_collision():
     env = gym.make("AckermanFollow-v0")
     try:
         base = env.unwrapped
-        obs, info = env.reset(seed=501, options={"stage": 5})
+        obs, info = env.reset(seed=501, options={"stage": 5, "force_front_spawn": True})
         assert info["stage"] == 5
-        assert base.max_steps == 700
+        assert base.max_steps == 750
         assert obs.shape == (490,)
 
         # Human walks down dead end (> 3.5 m), turns 180 deg, and returns past car (< 0.0 m) cleanly
         max_x, min_x = -999.0, 999.0
-        for _ in range(700):
+        for _ in range(750):
             base._step_human_target()
             tx, ty = base.target.x, base.target.y
             max_x = max(max_x, tx)
@@ -313,7 +313,7 @@ def test_stage5_dead_end_road_walk_past_and_cap_collision():
         assert min_x < 0.0
 
         # Driving robot forward into dead-end cap at x=4.80 triggers collision termination
-        env.reset(seed=502, options={"stage": 5})
+        env.reset(seed=502, options={"stage": 5, "force_front_spawn": True})
         base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [3.8, 0.0, 0.0]
         base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [1.0, 0.0, 0.0, 0.0]
         mujoco.mj_forward(base.model, base.data)
@@ -327,5 +327,81 @@ def test_stage5_dead_end_road_walk_past_and_cap_collision():
                 assert reward == -25.0
                 break
         assert collided
+    finally:
+        env.close()
+
+
+def test_stage6_combined_lturn_deadend_and_collision():
+    env = gym.make("AckermanFollow-v0")
+    try:
+        base = env.unwrapped
+        obs, info = env.reset(seed=601, options={"stage": 6, "force_front_spawn": True})
+        assert info["stage"] == 6
+        assert base.max_steps == 900
+        assert obs.shape == (490,)
+
+        # Human walks Open -> L-Turn -> Dead-End Wing -> 180 back cleanly at nominal speed
+        base._adaptive_pacing = False
+        max_x, min_x, min_y = -999.0, 999.0, 999.0
+        for _ in range(900):
+            base._step_human_target()
+            tx, ty = base.target.x, base.target.y
+            max_x = max(max_x, tx)
+            min_x = min(min_x, tx)
+            min_y = min(min_y, ty)
+            # Clear of Stage 6 box walls
+            assert not (2.50 <= tx <= 5.80 and 1.15 <= ty <= 1.35)
+            assert not (5.60 <= tx <= 5.80 and -4.30 <= ty <= 1.35)
+            assert not (2.20 <= tx <= 3.30 and -1.35 <= ty <= -1.15)
+            assert not (3.20 <= tx <= 3.40 and -4.30 <= ty <= -1.15)
+            assert not (3.20 <= tx <= 5.80 and -4.30 <= ty <= -4.10)
+
+        assert max_x > 3.8
+        assert min_y < -2.8
+        assert min_x < 2.0
+
+        # Driving robot into s6_deadend_cap at y=-4.20 triggers collision
+        env.reset(seed=602, options={"stage": 6, "force_front_spawn": True})
+        base.data.qpos[base._robot_free_qpos : base._robot_free_qpos + 3] = [4.5, -3.2, 0.0]
+        # yaw = -pi/2 -> q = [cos(-pi/4), 0, 0, sin(-pi/4)]
+        base.data.qpos[base._robot_free_qpos + 3 : base._robot_free_qpos + 7] = [
+            np.cos(-np.pi / 4.0),
+            0.0,
+            0.0,
+            np.sin(-np.pi / 4.0),
+        ]
+        mujoco.mj_forward(base.model, base.data)
+
+        collided = False
+        for _ in range(60):
+            _, reward, terminated, _, step_info = env.step(np.array([0.80, 0.0], dtype=np.float32))
+            if terminated:
+                collided = True
+                assert step_info["collision"] is True
+                assert reward == -25.0
+                break
+        assert collided
+    finally:
+        env.close()
+
+
+def test_force_lost_spawn_and_anti_freeze_penalty():
+    env = gym.make("AckermanFollow-v0")
+    try:
+        for stg in (1, 4, 5):
+            obs, info = env.reset(seed=700 + stg, options={"stage": stg, "force_lost_spawn": True})
+            assert np.all(np.isfinite(obs))
+            assert info["target_in_fov"] is False
+
+        # Compare idling out-of-FOV vs turning/moving toward target from identical lost state
+        _, info_idle = env.reset(seed=710, options={"stage": 1, "force_lost_spawn": True})
+        assert info_idle["target_in_fov"] is False
+        _, r_idle, _, _, _ = env.step(np.array([0.0, 0.0], dtype=np.float32))
+
+        _, info_move = env.reset(seed=710, options={"stage": 1, "force_lost_spawn": True})
+        turn_steer = float(np.sign(info_move["target_bearing"]) * 0.5)
+        _, r_move, _, _, _ = env.step(np.array([0.50, turn_steer], dtype=np.float32))
+
+        assert r_idle < r_move
     finally:
         env.close()

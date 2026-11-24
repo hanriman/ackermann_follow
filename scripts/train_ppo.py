@@ -97,8 +97,8 @@ def parse_args():
         "--start-stage",
         type=int,
         default=1,
-        choices=[1, 2, 3, 4, 5],
-        help="Starting curriculum stage (1..5)",
+        choices=[1, 2, 3, 4, 5, 6],
+        help="Starting curriculum stage (1..6)",
     )
     parser.add_argument(
         "--warm-start",
@@ -348,6 +348,8 @@ def main():
                 "s2_rew",
                 "s3_rew",
                 "s4_rew",
+                "s5_rew",
+                "s6_rew",
             ]
         )
         csv_file.flush()
@@ -545,7 +547,7 @@ def main():
                                 if (
                                     thresh is not None
                                     and mean_frontier >= thresh
-                                    and current_unlocked < 4
+                                    and current_unlocked < 6
                                 ):
                                     grad_stage = current_unlocked
                                     current_unlocked += 1
@@ -714,9 +716,11 @@ def main():
             s2_val = ""
             s3_val = ""
             s4_val = ""
+            s5_val = ""
+            s6_val = ""
 
             if global_step % eval_freq < steps_per_iter or iteration == num_iterations:
-                eval_stages = (1, 2, 3, 4, 5) if current_unlocked >= 5 else (1, 2, 3, 4)
+                eval_stages = tuple(range(1, max(4, current_unlocked) + 1))
                 eval_metrics = evaluate_policy(
                     model,
                     eval_env,
@@ -758,6 +762,8 @@ def main():
                 s2_val = f"{s_breakdown[2]['mean_reward']:.1f}"
                 s3_val = f"{s_breakdown[3]['mean_reward']:.1f}"
                 s4_val = f"{s_breakdown[4]['mean_reward']:.1f}"
+                s5_val = f"{s_breakdown[5]['mean_reward']:.1f}" if 5 in s_breakdown else ""
+                s6_val = f"{s_breakdown[6]['mean_reward']:.1f}" if 6 in s_breakdown else ""
 
                 stg_summary = " | ".join(
                     [
@@ -816,6 +822,8 @@ def main():
                     s2_val,
                     s3_val,
                     s4_val,
+                    s5_val,
+                    s6_val,
                 ]
             )
             csv_file.flush()

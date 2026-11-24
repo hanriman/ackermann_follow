@@ -36,8 +36,8 @@ def parse_args() -> argparse.Namespace:
         "--stage",
         type=int,
         default=None,
-        choices=[1, 2, 3, 4, 5],
-        help="Evaluate a single stage (1..5); omit to evaluate curriculum stages 1..4",
+        choices=[1, 2, 3, 4, 5, 6],
+        help="Evaluate a single stage (1..6); omit to evaluate curriculum stages 1..4",
     )
     parser.add_argument(
         "--episodes",

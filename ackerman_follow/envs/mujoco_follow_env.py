@@ -49,7 +49,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 20}
 
-    DEFAULT_STAGE_MAX_STEPS = {1: 500, 2: 900, 3: 600, 4: 600, 5: 700}
+    DEFAULT_STAGE_MAX_STEPS = {1: 500, 2: 900, 3: 600, 4: 600, 5: 750, 6: 900}
 
     def __init__(
         self,
@@ -67,14 +67,20 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         self.render_mode = render_mode
         self.cfg = robot_cfg if robot_cfg is not None else get_robot_config()
         self._fixed_max_steps = int(max_steps) if max_steps is not None else None
-        self.max_steps = self._fixed_max_steps or self.DEFAULT_STAGE_MAX_STEPS[int(np.clip(stage, 1, 5))]
+        self.max_steps = self._fixed_max_steps or self.DEFAULT_STAGE_MAX_STEPS[int(np.clip(stage, 1, 6))]
 
         # Curriculum configuration (synchronized via train_ppo.py)
-        self.unlocked_stage = int(np.clip(stage, 1, 5))
+        self.unlocked_stage = int(np.clip(stage, 1, 6))
         self.stage = self.unlocked_stage
         self.auto_curriculum = bool(auto_curriculum)
         self.min_episodes_per_stage = int(min_episodes_per_stage)
-        self.stage_thresholds = stage_thresholds or {1: 850.0, 2: 1200.0, 3: 700.0}
+        self.stage_thresholds = stage_thresholds or {
+            1: 850.0,
+            2: 1100.0,
+            3: 750.0,
+            4: 850.0,
+            5: 750.0,
+        }
         self.replay_previous_ratio = float(replay_previous_ratio)
 
         # Load MuJoCo model and data
@@ -130,6 +136,10 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         # Bipedal target model & episode state
         self.target = BipedalHumanTarget(rng=self.np_random)
         self._base_target_speed = 0.32
+        self._adaptive_pacing = True
+        self._speed_mult = 1.0
+        self._behavior_timer = 80
+        self._allow_pauses = True
         self._waypoints: list[tuple[float, float]] = []
         self._wp_idx = 0
         self._step_count = 0
@@ -198,6 +208,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             (3, "stage3_obstacles"),
             (4, "stage4_obstacles"),
             (5, "stage5_obstacles"),
+            (6, "stage6_obstacles"),
         ):
             bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, bname)
             self._stage_bodies[stg] = bid
@@ -214,7 +225,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
     def set_unlocked_stage(self, unlocked_stage: int) -> None:
         """Synchronize the maximum unlocked curriculum stage from the PPO trainer."""
-        self.unlocked_stage = int(np.clip(unlocked_stage, 1, 5))
+        self.unlocked_stage = int(np.clip(unlocked_stage, 1, 6))
 
     def _apply_stage_geometry(self, stage: int) -> None:
         """Enable only the active stage's obstacle geoms and hide others underground."""
@@ -227,7 +238,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
     def _sample_stage(self, options: dict[str, Any] | None) -> int:
         if options and "stage" in options and options["stage"] is not None:
-            return int(np.clip(int(options["stage"]), 1, 5))
+            return int(np.clip(int(options["stage"]), 1, 6))
         if not self.auto_curriculum or self.unlocked_stage <= 1:
             return self.unlocked_stage
         if float(self.np_random.random()) < self.replay_previous_ratio:
@@ -249,9 +260,17 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         self.data.mocap_pos[self._mocap_torso] = [self.target.x, self.target.y, 1.18 + bob_z]
         self.data.mocap_quat[self._mocap_torso] = q_human
 
-    def _setup_scenario(self, stage: int) -> None:
-        """Initialize robot pose, human target spawn (inside camera FOV), and stage waypoints."""
+    def _setup_scenario(self, stage: int, options: dict[str, Any] | None = None) -> None:
+        """Initialize robot pose, human target spawn, waypoints, and pacing flags."""
         rng = self.np_random
+        force_front = bool(options.get("force_front_spawn", False)) if options else False
+        force_lost = bool(options.get("force_lost_spawn", False)) if options else False
+
+        self._adaptive_pacing = True
+        self._allow_pauses = not force_front
+        self._speed_mult = 1.0
+        self._behavior_timer = int(rng.integers(40, 101))
+
         robot_yaw = float(rng.uniform(-0.20, 0.20))
 
         if stage == 1:
@@ -265,16 +284,20 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             speed = float(rng.uniform(0.26, 0.42))
             self._waypoints = []
         elif stage == 2:
-            # Spawn along upper lane of L-wall with randomized distance (including near-corner urgent cases)
+            # Spawn along upper lane of L-wall with far-sprint distances up to 4.5 m
             robot_x = float(rng.uniform(-0.25, 0.35))
             robot_y = float(rng.uniform(0.95, 1.40))
             robot_yaw = float(rng.uniform(-0.18, 0.18))
-            dist = float(rng.uniform(1.4, 4.1))
+            dist = float(rng.uniform(1.4, 4.5))
             bearing = float(rng.uniform(-0.22, 0.22))
-            hx = float(np.clip(robot_x + dist * math.cos(robot_yaw + bearing), 1.25, 4.65))
+            hx = float(np.clip(robot_x + dist * math.cos(robot_yaw + bearing), 1.25, 4.75))
             hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), 0.85, 1.65))
             hyaw = float(rng.uniform(-0.20, 0.20))
-            speed = float(rng.uniform(0.32, 0.45))
+            if (not force_front) and rng.random() < 0.50:
+                self._adaptive_pacing = False
+                speed = float(rng.uniform(0.40, 0.58))
+            else:
+                speed = float(rng.uniform(0.32, 0.46))
             # Closed 4-corner loop circling cleanly around s2_lwall_a/b
             self._waypoints = [
                 (5.25, 1.15),
@@ -323,8 +346,8 @@ class MuJoCoAckermanFollowEnv(gym.Env):
                 (0.80, -2.20),
                 (0.80, 0.00),
             ]
-        else:
-            # Stage 5: dead-end road where target turns 180 deg and walks back past the car
+        elif stage == 5:
+            # Stage 5: asymmetric dead-end road passes (hug right/left wall -> turn 180 -> pass car)
             robot_x = float(rng.uniform(-0.30, 0.20))
             robot_y = float(rng.uniform(-0.35, 0.35))
             robot_yaw = float(rng.uniform(-0.15, 0.15))
@@ -333,17 +356,50 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             hx = robot_x + dist * math.cos(robot_yaw + bearing)
             hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), -0.45, 0.45))
             hyaw = float(rng.uniform(-0.15, 0.15))
-            speed = float(rng.uniform(0.30, 0.40))
+            speed = float(rng.uniform(0.30, 0.42))
             pass_side = float(rng.choice([-1.0, 1.0]))
             self._waypoints = [
-                (3.85, 0.15 * pass_side),
-                (4.05, 0.60 * pass_side),
-                (1.80, 0.70 * pass_side),
-                (-2.20, 0.50 * pass_side),
-                (-4.80, -1.50 * pass_side),
-                (-2.40, -2.50 * pass_side),
-                (-1.40, 0.0),
+                (3.85, -0.75 * pass_side),
+                (4.20, 0.00),
+                (3.85, 0.72 * pass_side),
+                (1.60, 0.72 * pass_side),
+                (-2.20, 0.45 * pass_side),
+                (-4.50, -1.20 * pass_side),
+                (-2.20, -2.20 * pass_side),
+                (-1.40, 0.00),
             ]
+        else:
+            # Stage 6: Combined Open -> L-Turn -> Dead-End Wing -> 180 Exit
+            robot_x = float(rng.uniform(-0.30, 0.20))
+            robot_y = float(rng.uniform(-0.30, 0.30))
+            robot_yaw = float(rng.uniform(-0.15, 0.15))
+            dist = float(rng.uniform(1.4, 4.5))
+            bearing = float(rng.uniform(-0.20, 0.20))
+            hx = float(np.clip(robot_x + dist * math.cos(robot_yaw + bearing), 1.25, 4.75))
+            hy = float(np.clip(robot_y + dist * math.sin(robot_yaw + bearing), -0.65, 0.65))
+            hyaw = float(rng.uniform(-0.15, 0.15))
+            if (not force_front) and rng.random() < 0.50:
+                self._adaptive_pacing = False
+                speed = float(rng.uniform(0.40, 0.56))
+            else:
+                speed = float(rng.uniform(0.30, 0.44))
+            pass_side = float(rng.choice([-1.0, 1.0]))
+            x_in = 4.50 - 0.45 * pass_side
+            x_out = 4.50 + 0.45 * pass_side
+            self._waypoints = [
+                (x_in, 0.00),
+                (x_in, -3.45),
+                (4.50, -3.60),
+                (x_out, -3.45),
+                (x_out, 0.35),
+                (1.50, 0.35),
+                (0.00, 0.00),
+            ]
+
+        # Mid-episode "Target Lost / Behind Car" recovery starts (30% in Stages 1, 4, 5)
+        if force_lost or (not force_front and stage in (1, 4, 5) and rng.random() < 0.30):
+            yaw_offset = float(rng.choice([-1.0, 1.0]) * rng.uniform(1.10, math.pi))
+            robot_yaw = _wrap_angle(robot_yaw + yaw_offset)
 
         self.data.qpos[self._robot_free_qpos : self._robot_free_qpos + 3] = [
             robot_x,
@@ -362,13 +418,25 @@ class MuJoCoAckermanFollowEnv(gym.Env):
 
     def _step_human_target(self) -> None:
         """Advance human heading toward stage waypoints or smooth open-arena curves."""
-        if self.stage >= 2:
+        self._behavior_timer -= 1
+        if self._behavior_timer <= 0:
+            rng = self.np_random
+            if self._allow_pauses and self.stage in (1, 4, 5, 6) and rng.random() < 0.15:
+                self._speed_mult = 0.0
+                self._behavior_timer = int(rng.integers(30, 56))
+            else:
+                self._speed_mult = float(rng.uniform(0.65, 1.35))
+                self._behavior_timer = int(rng.integers(40, 101))
+
+        if self.stage >= 2 and self._adaptive_pacing:
             rx, ry, _, _, _ = self._get_robot_pose_and_vel()
             dist = math.hypot(self.target.x - rx, self.target.y - ry)
             pace = float(np.clip(2.4 / max(2.4, dist), 0.55, 1.0))
-            self.target.speed = self._base_target_speed * pace
+            raw_speed = self._base_target_speed * pace * self._speed_mult
         else:
-            self.target.speed = self._base_target_speed
+            raw_speed = self._base_target_speed * self._speed_mult
+
+        self.target.speed = 0.0 if self._speed_mult == 0.0 else float(np.clip(raw_speed, 0.22, 0.65))
 
         if self._waypoints:
             wx, wy = self._waypoints[self._wp_idx]
@@ -571,7 +639,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             else self.DEFAULT_STAGE_MAX_STEPS[self.stage]
         )
         self._apply_stage_geometry(self.stage)
-        self._setup_scenario(self.stage)
+        self._setup_scenario(self.stage, options=options)
 
         self._step_count = 0
         self._steer_cmd = 0.0
@@ -621,11 +689,14 @@ class MuJoCoAckermanFollowEnv(gym.Env):
         if collision:
             reward = -25.0
         else:
+            _, _, _, v_fwd, _ = self._get_robot_pose_and_vel()
             dist_err = abs(dist - self.cfg.target_follow_distance)
             dist_reward = 1.2 * math.exp(-((dist_err / 0.65) ** 2))
-            # Gate heading/FOV reward by proximity so backing far away cannot farm alignment points
+            # Gate proximity bonus while keeping dense cos(bearing) cue at 3-5 m / behind-car angles
             dist_scale = math.exp(-((dist_err / 1.40) ** 2))
-            align_reward = dist_scale * (0.5 * math.cos(bearing) + (0.4 if in_fov else 0.0))
+            align_reward = 0.15 * math.cos(bearing) + dist_scale * (
+                0.35 * math.cos(bearing) + (0.40 if in_fov else 0.0)
+            )
 
             # Potential-based distance and bearing progress shaping
             dist_progress = 0.6 * (self._prev_dist_err - dist_err)
@@ -645,6 +716,9 @@ class MuJoCoAckermanFollowEnv(gym.Env):
             )
             reverse_pen = -0.08 * far_rev_mult * rev_frac
 
+            # Anti-freeze penalty: discourage standing still when target is lost out of FOV
+            idle_lost_pen = -0.18 if (not in_fov and abs(v_fwd) < 0.10) else 0.0
+
             clearance_pen = -0.40 * max(0.0, (0.35 - min_lidar) / 0.35)
             personal_space_pen = -0.25 * max(0.0, (0.35 - dist) / 0.35)
 
@@ -655,6 +729,7 @@ class MuJoCoAckermanFollowEnv(gym.Env):
                 + turn_progress
                 + steer_smooth_pen
                 + reverse_pen
+                + idle_lost_pen
                 + clearance_pen
                 + personal_space_pen
             )

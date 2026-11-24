@@ -1,9 +1,9 @@
 # PPO Hyperparameters for AckBot Target Following (Recurrent Spatial PPO)
 algorithm:
-  total_timesteps: 900000       # Total environment steps across curriculum
+  total_timesteps: 600000       # Total environment steps across curriculum / fine-tuning
   num_envs: 8                   # Parallel environments per rollout
   n_steps: 512                  # Rollout horizon per env (8 * 512 = 4096 transitions/iter)
-  seq_len: 32                   # Sequence chunk length for recurrent GRU BPTT
+  seq_len: 64                   # Sequence chunk length for recurrent GRU BPTT (3.2 s)
   num_mini_batches: 8           # Minibatches per epoch (512 transitions/minibatch)
   batch_size: 128               # Fallback flat minibatch size (single-env / tests)
   n_epochs: 6                   # PPO update epochs per iteration
@@ -24,7 +24,9 @@ curriculum:
     1: { min_return: 850.0 }
     2: { min_return: 1100.0 }
     3: { min_return: 750.0 }
-  replay_previous_ratio: 0.30
+    4: { min_return: 850.0 }
+    5: { min_return: 750.0 }
+  replay_previous_ratio: 0.40
 
 evaluation:
   eval_freq: 24576              # Evaluate every ~24.5k steps (every 6 iterations)
