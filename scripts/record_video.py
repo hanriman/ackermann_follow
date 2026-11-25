@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import ackerman_follow.envs  # noqa: F401
 from ackerman_follow.config import select_device
+from ackerman_follow.engine.evaluator import _infer_action, _init_agent_state
 from scripts.eval_policy import load_policy
 
 
@@ -362,7 +363,7 @@ def main() -> None:
     try:
         for stg in args.stages:
             obs, info = env.reset(seed=args.seed + stg * 100, options={"stage": stg})
-            hx = model.init_hidden(1, device=device)
+            hx = _init_agent_state(model, device)
             ep_ret = 0.0
             step_idx = 0
             done = False
@@ -372,7 +373,7 @@ def main() -> None:
             while not done:
                 with torch.no_grad():
                     obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-                    act_t, hx = model.get_deterministic_action(obs_t, hx=hx, return_hidden=True)
+                    act_t, hx = _infer_action(model, obs_t, hx)
                     action = act_t.squeeze(0).cpu().numpy()
 
                 obs, reward, terminated, truncated, info = env.step(action)

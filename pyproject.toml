@@ -20,6 +20,7 @@ dev = [
 ]
 
 [project.scripts]
+ackerman-train = "scripts.train:main"
 ackerman-train-ppo = "scripts.train_ppo:main"
 
 [build-system]

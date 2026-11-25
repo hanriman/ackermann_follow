@@ -6,6 +6,7 @@
   </option>
 
   <visual>
+    <global offwidth="1920" offheight="1080"/>
     <headlight ambient="0.4 0.4 0.4" diffuse="0.7 0.7 0.7" specular="0.2 0.2 0.2"/>
     <map znear="0.02" zfar="50"/>
   </visual>
@@ -52,48 +53,48 @@
     <!-- Floor in group 2 so horizontal rays (group 0) never graze floor -->
     <geom name="floor" type="plane" size="12 12 0.1" material="floor_mat" group="2" contype="2" conaffinity="0" friction="1.2 0.005 0.0001"/>
 
-    <!-- Outer 16m x 16m Arena Boundary Walls (always active, group 0) -->
+    <!-- Outer 16m x 16m Arena Boundary Walls (always active, group 0, 1.60m tall) -->
     <body name="arena_walls" pos="0 0 0">
-      <geom name="wall_north" class="world_static" type="box" pos="8.05 0 0.40" size="0.05 8.10 0.40" material="wall_mat"/>
-      <geom name="wall_south" class="world_static" type="box" pos="-8.05 0 0.40" size="0.05 8.10 0.40" material="wall_mat"/>
-      <geom name="wall_east" class="world_static" type="box" pos="0 -8.05 0.40" size="8.10 0.05 0.40" material="wall_mat"/>
-      <geom name="wall_west" class="world_static" type="box" pos="0 8.05 0.40" size="8.10 0.05 0.40" material="wall_mat"/>
+      <geom name="wall_north" class="world_static" type="box" pos="8.05 0 0.80" size="0.05 8.10 0.80" material="wall_mat"/>
+      <geom name="wall_south" class="world_static" type="box" pos="-8.05 0 0.80" size="0.05 8.10 0.80" material="wall_mat"/>
+      <geom name="wall_east" class="world_static" type="box" pos="0 -8.05 0.80" size="8.10 0.05 0.80" material="wall_mat"/>
+      <geom name="wall_west" class="world_static" type="box" pos="0 8.05 0.80" size="8.10 0.05 0.80" material="wall_mat"/>
     </body>
 
     <!-- Stage 2: Straight Corridor (2.40m clear width, x in [-6.8, +6.8]) -->
     <body name="stage2_obstacles" pos="0 0 -5">
-      <geom name="s2_corr_left" class="world_static" type="box" pos="0.00 1.30 0.40" size="6.80 0.10 0.40" material="stage2_mat"/>
-      <geom name="s2_corr_right" class="world_static" type="box" pos="0.00 -1.30 0.40" size="6.80 0.10 0.40" material="stage2_mat"/>
+      <geom name="s2_corr_left" class="world_static" type="box" pos="0.00 1.30 0.80" size="6.80 0.10 0.80" material="stage2_mat"/>
+      <geom name="s2_corr_right" class="world_static" type="box" pos="0.00 -1.30 0.80" size="6.80 0.10 0.80" material="stage2_mat"/>
     </body>
 
     <!-- Stage 3: L-Wall Occlusion Obstacles (open outer side) -->
     <body name="stage3_obstacles" pos="0 0 -5">
-      <geom name="s3_lwall_a" class="world_static" type="box" pos="2.80 -0.90 0.40" size="0.10 1.40 0.40" material="stage3_mat"/>
-      <geom name="s3_lwall_b" class="world_static" type="box" pos="3.60 0.40 0.40" size="0.90 0.10 0.40" material="stage3_mat"/>
+      <geom name="s3_lwall_a" class="world_static" type="box" pos="2.80 -0.90 0.80" size="0.10 1.40 0.80" material="stage3_mat"/>
+      <geom name="s3_lwall_b" class="world_static" type="box" pos="3.60 0.40 0.80" size="0.90 0.10 0.80" material="stage3_mat"/>
     </body>
 
     <!-- Stage 4: Bending L-Corridor Obstacles (2.0m clear lane around 90-deg right bend) -->
     <body name="stage4_obstacles" pos="0 0 -5">
-      <geom name="s4_corr_left_1" class="world_static" type="box" pos="3.10 1.10 0.40" size="2.80 0.10 0.40" material="stage4_mat"/>
-      <geom name="s4_corr_right_1" class="world_static" type="box" pos="1.95 -1.10 0.40" size="1.65 0.10 0.40" material="stage4_mat"/>
-      <geom name="s4_corr_left_2" class="world_static" type="box" pos="3.60 -2.15 0.40" size="0.10 1.15 0.40" material="stage4_mat"/>
-      <geom name="s4_corr_right_2" class="world_static" type="box" pos="5.80 -1.05 0.40" size="0.10 2.25 0.40" material="stage4_mat"/>
+      <geom name="s4_corr_left_1" class="world_static" type="box" pos="3.10 1.10 0.80" size="2.80 0.10 0.80" material="stage4_mat"/>
+      <geom name="s4_corr_right_1" class="world_static" type="box" pos="1.95 -1.10 0.80" size="1.65 0.10 0.80" material="stage4_mat"/>
+      <geom name="s4_corr_left_2" class="world_static" type="box" pos="3.60 -2.15 0.80" size="0.10 1.15 0.80" material="stage4_mat"/>
+      <geom name="s4_corr_right_2" class="world_static" type="box" pos="5.80 -1.05 0.80" size="0.10 2.25 0.80" material="stage4_mat"/>
     </body>
 
     <!-- Stage 5 & 6: Dead-End Road (2.40m clear width, open exit at x < -1.0) -->
     <body name="stage5_obstacles" pos="0 0 -5">
-      <geom name="s5_deadend_left" class="world_static" type="box" pos="1.95 1.30 0.40" size="2.95 0.10 0.40" material="stage5_mat"/>
-      <geom name="s5_deadend_right" class="world_static" type="box" pos="1.95 -1.30 0.40" size="2.95 0.10 0.40" material="stage5_mat"/>
-      <geom name="s5_deadend_cap" class="world_static" type="box" pos="4.80 0.00 0.40" size="0.10 1.40 0.40" material="stage5_mat"/>
+      <geom name="s5_deadend_left" class="world_static" type="box" pos="1.95 1.30 0.80" size="2.95 0.10 0.80" material="stage5_mat"/>
+      <geom name="s5_deadend_right" class="world_static" type="box" pos="1.95 -1.30 0.80" size="2.95 0.10 0.80" material="stage5_mat"/>
+      <geom name="s5_deadend_cap" class="world_static" type="box" pos="4.80 0.00 0.80" size="0.10 1.40 0.80" material="stage5_mat"/>
     </body>
 
     <!-- Stage 7: Combined Open -> L-Turn -> Dead-End Wing -->
     <body name="stage7_obstacles" pos="0 0 -5">
-      <geom name="s7_top" class="world_static" type="box" pos="4.15 1.25 0.40" size="1.65 0.10 0.40" material="stage7_mat"/>
-      <geom name="s7_outer_right" class="world_static" type="box" pos="5.70 -1.475 0.40" size="0.10 2.825 0.40" material="stage7_mat"/>
-      <geom name="s7_inner_corner_h" class="world_static" type="box" pos="2.75 -1.25 0.40" size="0.55 0.10 0.40" material="stage7_mat"/>
-      <geom name="s7_inner_left" class="world_static" type="box" pos="3.30 -2.725 0.40" size="0.10 1.575 0.40" material="stage7_mat"/>
-      <geom name="s7_deadend_cap" class="world_static" type="box" pos="4.50 -4.20 0.40" size="1.30 0.10 0.40" material="stage7_mat"/>
+      <geom name="s7_top" class="world_static" type="box" pos="4.15 1.25 0.80" size="1.65 0.10 0.80" material="stage7_mat"/>
+      <geom name="s7_outer_right" class="world_static" type="box" pos="5.70 -1.475 0.80" size="0.10 2.825 0.80" material="stage7_mat"/>
+      <geom name="s7_inner_corner_h" class="world_static" type="box" pos="2.75 -1.25 0.80" size="0.55 0.10 0.80" material="stage7_mat"/>
+      <geom name="s7_inner_left" class="world_static" type="box" pos="3.30 -2.725 0.80" size="0.10 1.575 0.80" material="stage7_mat"/>
+      <geom name="s7_deadend_cap" class="world_static" type="box" pos="4.50 -4.20 0.80" size="1.30 0.10 0.80" material="stage7_mat"/>
     </body>
 
     <!-- Bipedal Human Target (3 mocap bodies driven by BipedalHumanTarget) -->

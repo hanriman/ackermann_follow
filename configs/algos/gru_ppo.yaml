@@ -1,0 +1,30 @@
+# Recurrent Spatial PPO (GRU PPO)
+algo: "gru_ppo"
+algorithm:
+  total_timesteps: 1200000
+  num_envs: 8
+  n_steps: 512
+  seq_len: 64
+  num_mini_batches: 8
+  n_epochs: 6
+  gru_hidden_dim: 128
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  clip_range_vf: 5.0
+  ent_coef: 0.001
+  vf_coef: 0.05
+  max_grad_norm: 0.5
+  target_kl: 0.03
+
+evaluation:
+  eval_freq: 36864
+  n_eval_episodes: 3
+  save_best_only: false
+
+runtime:
+  vec_env: "sync"
+  torch_threads: "auto"
+
+device: "auto"

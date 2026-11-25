@@ -1,0 +1,38 @@
+# LeWorldModel (JEPA + SIGReg + MPPI Planning)
+algo: "lewm"
+algorithm:
+  total_timesteps: 400000
+  num_envs: 8
+  n_steps: 256
+  buffer_capacity: 200000
+  warmup_steps: 4096
+  batch_size: 64
+  horizon: 6
+  grad_steps_per_iter: 16
+  latent_dim: 128
+  predictor_hidden: 256
+  ema_tau: 0.99
+  sigreg_coef: 0.25
+  pred_decay: 0.90
+  use_recurrent_belief: true
+  num_bins: 101
+  reward_coef: 1.0
+  done_coef: 0.5
+  planner_horizon: 6
+  planner_samples: 256
+  planner_elites: 32
+  planner_iterations: 4
+  learning_rate: 0.0003
+  gamma: 0.99
+  max_grad_norm: 10.0
+
+evaluation:
+  eval_freq: 24576
+  n_eval_episodes: 3
+  save_best_only: false
+
+runtime:
+  vec_env: "sync"
+  torch_threads: "auto"
+
+device: "auto"

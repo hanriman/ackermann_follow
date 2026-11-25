@@ -1,0 +1,45 @@
+# LeWM + Model-Free RL (policy_type: "ppo" or "sac")
+algo: "lewm_rl_modelfree"
+algorithm:
+  policy_type: "ppo"
+  total_timesteps: 1200000
+  num_envs: 8
+  n_steps: 512
+  seq_len: 64
+  num_mini_batches: 8
+  n_epochs: 6
+  latent_dim: 128
+  gru_hidden_dim: 128
+  freeze_wm: false
+  jepa_aux_coef: 0.25
+  ema_tau: 0.99
+  sigreg_coef: 0.25
+  use_recurrent_belief: true
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  clip_range_vf: 5.0
+  ent_coef: 0.001
+  vf_coef: 0.05
+  max_grad_norm: 0.5
+  target_kl: 0.03
+  # Off-policy SAC settings (used when policy_type: "sac")
+  buffer_capacity: 200000
+  warmup_steps: 2048
+  batch_size: 64
+  horizon: 8
+  grad_steps_per_iter: 16
+  sac_tau: 0.005
+  init_alpha: 0.2
+
+evaluation:
+  eval_freq: 36864
+  n_eval_episodes: 3
+  save_best_only: false
+
+runtime:
+  vec_env: "sync"
+  torch_threads: "auto"
+
+device: "auto"
