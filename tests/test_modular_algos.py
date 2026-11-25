@@ -4,18 +4,18 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-import ackerman_follow.envs  # noqa: F401
-from ackerman_follow.algos.registry import build_agent, load_agent
-from ackerman_follow.buffers.rollout import RolloutBuffer
-from ackerman_follow.buffers.sequence_replay import SequenceReplayBuffer
-from ackerman_follow.config import get_robot_config
-from ackerman_follow.engine.checkpoint import save_checkpoint
-from ackerman_follow.engine.curriculum import CurriculumTracker
-from ackerman_follow.engine.evaluator import evaluate_agent
-from ackerman_follow.models.encoders import SpatialSensorEncoder
-from ackerman_follow.models.heads import two_hot_decode, two_hot_encode
-from ackerman_follow.models.world_models.lewm_jepa import LeWMJEPA, sigreg_epps_pulley_loss
-from ackerman_follow.planners.mppi import MPPIPlanner
+import ackermann_follow.envs  # noqa: F401
+from ackermann_follow.algos.registry import build_agent, load_agent
+from ackermann_follow.buffers.rollout import RolloutBuffer
+from ackermann_follow.buffers.sequence_replay import SequenceReplayBuffer
+from ackermann_follow.config import get_robot_config
+from ackermann_follow.engine.checkpoint import save_checkpoint
+from ackermann_follow.engine.curriculum import CurriculumTracker
+from ackermann_follow.engine.evaluator import evaluate_agent
+from ackermann_follow.models.encoders import SpatialSensorEncoder
+from ackermann_follow.models.heads import two_hot_decode, two_hot_encode
+from ackermann_follow.models.world_models.lewm_jepa import LeWMJEPA, sigreg_epps_pulley_loss
+from ackermann_follow.planners.mppi import MPPIPlanner
 from scripts.train import load_combined_config
 
 
@@ -135,7 +135,7 @@ def test_all_registered_algos_act_update_checkpoint_and_eval(tmp_path):
         ("lewm_tdmpc2", {"latent_dim": 64, "batch_size": 8, "horizon": 4, "grad_steps_per_iter": 2, "planner_samples": 32, "planner_elites": 8, "planner_iterations": 2, "num_pi_trajs": 8}),
     ]
 
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         for idx, (algo_name, algo_cfg) in enumerate(algo_cases):
             agent = build_agent(algo_name, obs_dim=490, act_dim=2, algo_cfg=algo_cfg, robot_cfg=cfg).to(device)

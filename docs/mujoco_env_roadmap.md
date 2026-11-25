@@ -1,12 +1,12 @@
-# MuJoCo Environment (`AckermanFollow-v0`) Specification & Contract
+# MuJoCo Environment (`AckermannFollow-v0`) Specification & Contract
 
-This document captures the implemented interface contract and physical modeling details connecting `ackerman_follow/assets/ackbot.xml` and `ackerman_follow/envs/mujoco_follow_env.py` to `scripts/train_ppo.py`.
+This document captures the implemented interface contract and physical modeling details connecting `ackermann_follow/assets/ackbot.xml` and `ackermann_follow/envs/mujoco_follow_env.py` to `scripts/train_ppo.py`.
 
 ---
 
-## 1. Gymnasium Interface (`AckermanFollow-v0`)
+## 1. Gymnasium Interface (`AckermannFollow-v0`)
 
-* **Environment ID:** `AckermanFollow-v0` registered in `ackerman_follow/envs/__init__.py`.
+* **Environment ID:** `AckermannFollow-v0` registered in `ackermann_follow/envs/__init__.py`.
 * **Constructor Keyword Arguments:**
   * `auto_curriculum: bool`
   * `stage: int` (`1..7`)
@@ -25,7 +25,7 @@ This document captures the implemented interface contract and physical modeling 
 
 ---
 
-## 2. MJCF Model (`ackerman_follow/assets/ackbot.xml`)
+## 2. MJCF Model (`ackermann_follow/assets/ackbot.xml`)
 
 * Matches `configs/robot_params.yaml` (`wheelbase = 0.30 m`, `track = 0.30 m`, `wheel_radius = 0.06 m`, `chassis_mass = 5.0 kg`, `4 × 0.40 kg` wheels).
 * **Steering Hinge Clearance:** Front wheel steering hinges allow `±0.75 rad` (`~43°`) so the inner wheel reaches `41.84°` at `R_min = 0.485 m` without hitting joint limits or chassis corners.

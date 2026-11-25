@@ -1,25 +1,25 @@
-# Ackerman Follow (MuJoCo)
+# Ackermann Follow (MuJoCo)
 
 Clean MuJoCo-native workspace for 4-wheel Ackermann target following with modular RL & World-Model algorithms (`gru_ppo`, `lewm`, `lewm_rl_modelfree`, `lewm_tdmpc2`) over a `490-D` sensor input (`64` front camera depth rays + `64` RGB-D target-detection mask rays + `360` planar LiDAR rays + `2` proprioception states).
 
 ## Directory Structure
 
 ```text
-ackerman_follow/
+ackermann_follow/
 ├── spec.txt                        # Canonical physical & sensor specifications
 ├── docs/
 │   ├── architecture.md             # Sensor contract, Spatial-GRU PPO & Ackermann math
 │   ├── hardware_and_dev_setup.md   # Linux VM (6c/12GB) & MacBook Pro M4 Pro (24GB) guide
-│   └── mujoco_env_roadmap.md       # Interface contract & MJCF checklist for AckermanFollow-v0
+│   └── mujoco_env_roadmap.md       # Interface contract & MJCF checklist for AckermannFollow-v0
 ├── configs/
 │   ├── robot_params.yaml           # Chassis, Ackermann steering, camera & LiDAR params
 │   ├── curriculum.yaml             # Shared 7-stage curriculum thresholds & replay ratio
 │   ├── ppo_follow.yaml             # Legacy PPO config (still supported by train_ppo.py)
 │   └── algos/                      # Per-algorithm configs (gru_ppo, lewm, lewm_rl_modelfree, lewm_tdmpc2)
-├── ackerman_follow/
+├── ackermann_follow/
 │   ├── config.py                   # RobotConfig, CPU thread guard & select_device()
 │   ├── assets/ackbot.xml           # MuJoCo MJCF model (AckBot, human walker, 7-stage arenas)
-│   ├── envs/                       # AckermanFollow-v0 & BipedalHumanTarget
+│   ├── envs/                       # AckermannFollow-v0 & BipedalHumanTarget
 │   ├── models/                     # SpatialSensorEncoder, heads, & world_models/lewm_jepa.py
 │   ├── planners/                   # Batched MPPI latent trajectory optimizer
 │   ├── buffers/                    # On-policy RolloutBuffer & off-policy SequenceReplayBuffer
@@ -64,7 +64,7 @@ ackerman_follow/
 # Install dependencies & verify all unit tests + lint
 uv sync --extra dev
 uv run --extra dev pytest tests/ -v
-uv run --extra dev ruff check ackerman_follow scripts tests
+uv run --extra dev ruff check ackermann_follow scripts tests
 
 # Train with unified multi-algorithm runner
 uv run python scripts/train.py --algo gru_ppo --exp-name m4_ppo --device auto --vec-env async --num-envs 8

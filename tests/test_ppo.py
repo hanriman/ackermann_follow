@@ -1,9 +1,9 @@
 import numpy as np
 import torch
 
-from ackerman_follow.config import RobotConfig
-from ackerman_follow.ppo.actor_critic import ActorCritic
-from ackerman_follow.ppo.buffer import RolloutBuffer
+from ackermann_follow.config import RobotConfig
+from ackermann_follow.ppo.actor_critic import ActorCritic
+from ackermann_follow.ppo.buffer import RolloutBuffer
 
 
 def get_test_device():

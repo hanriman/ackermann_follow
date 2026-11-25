@@ -3,14 +3,14 @@ import mujoco
 import numpy as np
 import torch
 
-import ackerman_follow.envs  # noqa: F401
-from ackerman_follow.ppo.actor_critic import ActorCritic
+import ackermann_follow.envs  # noqa: F401
+from ackermann_follow.ppo.actor_critic import ActorCritic
 from scripts.eval_policy import load_policy, run_evaluation
 from scripts.train_ppo import _EnvFactory
 
 
 def test_env_spaces_and_gym_make():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         assert env.observation_space.shape == (490,)
         assert env.action_space.shape == (2,)
@@ -25,7 +25,7 @@ def test_env_spaces_and_gym_make():
 
 
 def test_ray_ordering_right_to_left_and_lidar_ccw():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         base = env.unwrapped
         base.reset(seed=7, options={"stage": 1})
@@ -85,7 +85,7 @@ def test_ray_ordering_right_to_left_and_lidar_ccw():
 
 
 def test_ackermann_turning_and_inner_wheel_clearance():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         base = env.unwrapped
         env.reset(seed=10, options={"stage": 1})
@@ -112,7 +112,7 @@ def test_ackermann_turning_and_inner_wheel_clearance():
 
 
 def test_stage_switching_and_collision_termination():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         for stg in (1, 2, 3, 4, 5, 6, 7):
             obs, info = env.reset(seed=100 + stg, options={"stage": stg})
@@ -140,7 +140,7 @@ def test_stage_switching_and_collision_termination():
 
 
 def test_human_overstep_does_not_terminate_and_stage2_fov_spawn():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         base = env.unwrapped
 
@@ -289,7 +289,7 @@ def test_eval_policy_loads_checkpoint_and_runs(tmp_path):
 
 
 def test_stage5_dead_end_road_walk_past_and_cap_collision():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         base = env.unwrapped
         obs, info = env.reset(seed=501, options={"stage": 5, "force_front_spawn": True})
@@ -331,7 +331,7 @@ def test_stage5_dead_end_road_walk_past_and_cap_collision():
 
 
 def test_stage6_middle_dead_end_and_stage7_lturn_deadend():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         base = env.unwrapped
 
@@ -401,8 +401,8 @@ def test_stage6_middle_dead_end_and_stage7_lturn_deadend():
 
 
 def test_force_lost_spawn_anti_freeze_clearance_and_sensor_noise():
-    env = gym.make("AckermanFollow-v0")
-    env_noisy = gym.make("AckermanFollow-v0", sensor_noise=True)
+    env = gym.make("AckermannFollow-v0")
+    env_noisy = gym.make("AckermannFollow-v0", sensor_noise=True)
     try:
         for stg in (1, 5, 6):
             obs, info = env.reset(seed=700 + stg, options={"stage": stg, "force_lost_spawn": True})

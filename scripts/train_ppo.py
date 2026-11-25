@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Backward-compatible Recurrent PPO Training Entrypoint.
-Delegates to the unified modular training engine (`ackerman_follow.engine.run_training`).
+Delegates to the unified modular training engine (`ackermann_follow.engine.run_training`).
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from pathlib import Path
 
 import yaml
 
-from ackerman_follow.engine.evaluator import evaluate_agent
-from ackerman_follow.engine.runner import run_training
-from ackerman_follow.engine.vec_env import _EnvFactory, _VectorSafeInfoWrapper  # noqa: F401
+from ackermann_follow.engine.evaluator import evaluate_agent
+from ackermann_follow.engine.runner import run_training
+from ackermann_follow.engine.vec_env import _EnvFactory, _VectorSafeInfoWrapper  # noqa: F401
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "configs" / "ppo_follow.yaml"
 

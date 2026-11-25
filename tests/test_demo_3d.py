@@ -2,7 +2,7 @@ import gymnasium as gym
 import mujoco
 import numpy as np
 
-import ackerman_follow.envs  # noqa: F401
+import ackermann_follow.envs  # noqa: F401
 from scripts.demo_3d import (
     HumanGameController,
     LiveVideoRecorder,
@@ -50,7 +50,7 @@ def test_resolve_human_wall_collisions_slides_along_wall():
 
 
 def test_human_game_controller_and_step_with_wall_sliding():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     try:
         base = env.unwrapped
         obs, _ = base.reset(seed=11, options={"stage": 2, "force_front_spawn": True})
@@ -120,7 +120,7 @@ def test_human_game_controller_and_step_with_wall_sliding():
 
 
 def test_3d_renderer_overlays_and_pip_camera():
-    env = gym.make("AckermanFollow-v0")
+    env = gym.make("AckermannFollow-v0")
     base = env.unwrapped
     obs, info = base.reset(seed=7, options={"stage": 5, "force_front_spawn": True})
     renderer = mujoco.Renderer(base.model, height=240, width=320)

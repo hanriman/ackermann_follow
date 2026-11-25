@@ -36,10 +36,10 @@ import mujoco
 import numpy as np
 import torch
 
-import ackerman_follow.envs  # noqa: F401
-from ackerman_follow.config import select_device
-from ackerman_follow.engine.evaluator import _infer_action, _init_agent_state
-from ackerman_follow.envs.mujoco_follow_env import MuJoCoAckermanFollowEnv, _wrap_angle
+import ackermann_follow.envs  # noqa: F401
+from ackermann_follow.config import select_device
+from ackermann_follow.engine.evaluator import _infer_action, _init_agent_state
+from ackermann_follow.envs.mujoco_follow_env import MuJoCoAckermannFollowEnv, _wrap_angle
 from scripts.eval_policy import load_policy
 
 STAGE_NAMES = {
@@ -193,7 +193,7 @@ def prompt_startup_choice(default_stage: int | None) -> tuple[str, int, bool]:
     return mode, stg_num, False
 
 
-def _active_wall_boxes(env: MuJoCoAckermanFollowEnv) -> list[tuple[float, float, float, float]]:
+def _active_wall_boxes(env: MuJoCoAckermannFollowEnv) -> list[tuple[float, float, float, float]]:
     """Return (cx, cy, hx, hy) for all active static group-0 box walls in the scene."""
     boxes: list[tuple[float, float, float, float]] = []
     m = env.model
@@ -279,7 +279,7 @@ class HumanGameController:
 
     def step_from_input(
         self,
-        env: MuJoCoAckermanFollowEnv,
+        env: MuJoCoAckermannFollowEnv,
         forward_input: float,
         right_input: float,
         cam_forward_xy: tuple[float, float],
@@ -383,7 +383,7 @@ def _add_sphere(
 
 def append_3d_overlays(
     scn: mujoco.MjvScene,
-    env: MuJoCoAckermanFollowEnv,
+    env: MuJoCoAckermannFollowEnv,
     obs: np.ndarray,
     info: dict[str, Any],
     robot_trail: list[tuple[float, float]],
@@ -471,7 +471,7 @@ def append_3d_overlays(
 def update_camera_preset(
     cam: mujoco.MjvCamera,
     preset_idx: int,
-    env: MuJoCoAckermanFollowEnv,
+    env: MuJoCoAckermannFollowEnv,
     yaw_offset_deg: float,
     elev_offset_deg: float,
     dist_scale: float,
@@ -504,7 +504,7 @@ def update_camera_preset(
         cam.distance = float(np.clip(12.5 * dist_scale, 2.5, 28.0))
 
 
-def configure_robot_pip_camera(pip_cam: mujoco.MjvCamera, env: MuJoCoAckermanFollowEnv) -> None:
+def configure_robot_pip_camera(pip_cam: mujoco.MjvCamera, env: MuJoCoAckermannFollowEnv) -> None:
     """Align `pip_cam` with AckBot's front RGB-D camera looking straight ahead."""
     rx, ry, ryaw, _, _ = env._get_robot_pose_and_vel()
     cos_y, sin_y = math.cos(ryaw), math.sin(ryaw)
@@ -521,7 +521,7 @@ def configure_robot_pip_camera(pip_cam: mujoco.MjvCamera, env: MuJoCoAckermanFol
 
 
 def _step_env_with_human_choice(
-    env: MuJoCoAckermanFollowEnv,
+    env: MuJoCoAckermannFollowEnv,
     action: np.ndarray,
     human_mode: bool,
     human_ctrl: HumanGameController,
@@ -695,7 +695,7 @@ def run_interactive_3d(
     if not glfw.init():
         raise RuntimeError("Failed to initialize GLFW for 3D demo window.")
 
-    env = MuJoCoAckermanFollowEnv(sensor_noise=False)
+    env = MuJoCoAckermannFollowEnv(sensor_noise=False)
     window = None
     ctx = None
 
@@ -1106,7 +1106,7 @@ def record_3d_demo_video(
     from scripts.record_video import _load_font
 
     out_path = Path(args.record)
-    env = MuJoCoAckermanFollowEnv(sensor_noise=False)
+    env = MuJoCoAckermannFollowEnv(sensor_noise=False)
     env.model.vis.global_.offwidth = max(int(env.model.vis.global_.offwidth), int(args.width))
     env.model.vis.global_.offheight = max(int(env.model.vis.global_.offheight), int(args.height))
     renderer = mujoco.Renderer(env.model, height=args.height, width=args.width)

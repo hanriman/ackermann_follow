@@ -2,8 +2,8 @@ import pickle
 
 import numpy as np
 
-from ackerman_follow.config import configure_cpu_threads, get_robot_config
-from ackerman_follow.envs.human_target import BipedalHumanTarget
+from ackermann_follow.config import configure_cpu_threads, get_robot_config
+from ackermann_follow.envs.human_target import BipedalHumanTarget
 from scripts.train_ppo import _EnvFactory
 
 

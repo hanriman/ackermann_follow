@@ -1,5 +1,5 @@
 [project]
-name = "ackerman-follow"
+name = "ackermann-follow"
 version = "0.1.0"
 description = "MuJoCo-based 4-wheel Ackermann robot target-following with Recurrent Spatial PPO"
 readme = "README.md"
@@ -20,15 +20,15 @@ dev = [
 ]
 
 [project.scripts]
-ackerman-train = "scripts.train:main"
-ackerman-train-ppo = "scripts.train_ppo:main"
+ackermann-train = "scripts.train:main"
+ackermann-train-ppo = "scripts.train_ppo:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ackerman_follow", "scripts"]
+packages = ["ackermann_follow", "scripts"]
 
 [tool.ruff]
 line-length = 120

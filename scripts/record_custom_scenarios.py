@@ -18,10 +18,10 @@ import numpy as np
 import torch
 from PIL import ImageDraw
 
-import ackerman_follow.envs  # noqa: F401
-from ackerman_follow.config import select_device
-from ackerman_follow.engine.evaluator import _infer_action, _init_agent_state
-from ackerman_follow.envs.mujoco_follow_env import MuJoCoAckermanFollowEnv, _yaw_to_quat
+import ackermann_follow.envs  # noqa: F401
+from ackermann_follow.config import select_device
+from ackermann_follow.engine.evaluator import _infer_action, _init_agent_state
+from ackermann_follow.envs.mujoco_follow_env import MuJoCoAckermannFollowEnv, _yaw_to_quat
 from scripts.eval_policy import load_policy
 from scripts.record_video import TopDownRenderer, _load_font
 
@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _set_custom_pose(
-    env: MuJoCoAckermanFollowEnv,
+    env: MuJoCoAckermannFollowEnv,
     robot_pose: tuple[float, float, float],
     human_pose: tuple[float, float, float, float],
     waypoints: list[tuple[float, float]],
@@ -89,7 +89,7 @@ def _set_custom_pose(
 
 
 def _run_and_write_clip(
-    env: MuJoCoAckermanFollowEnv,
+    env: MuJoCoAckermannFollowEnv,
     model,
     device: torch.device,
     renderer: TopDownRenderer,
@@ -182,7 +182,7 @@ def main() -> None:
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     assert proc.stdin is not None
 
-    env_std = MuJoCoAckermanFollowEnv()
+    env_std = MuJoCoAckermannFollowEnv()
     try:
         # 1. Open -> L-Turn -> Dead End -> 180 back to initial position (native Stage 7 geometry)
         env_std.reset(seed=101, options={"stage": 7, "force_front_spawn": True})

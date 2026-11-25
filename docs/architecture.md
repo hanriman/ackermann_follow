@@ -6,7 +6,7 @@ This document specifies the canonical sensor observation contract, the Recurrent
 
 ## 1. Canonical Observation & Action Contract (`490-D` / `2-D`)
 
-Defined in `ackerman_follow/config.py` (`RobotConfig`):
+Defined in `ackermann_follow/config.py` (`RobotConfig`):
 
 | Slice | Name | Dim | Physical Range | Normalized Range | Ordering / Convention |
 | :--- | :--- | :---: | :--- | :--- | :--- |
@@ -21,7 +21,7 @@ Defined in `ackerman_follow/config.py` (`RobotConfig`):
 
 ---
 
-## 2. Recurrent Spatial `ActorCritic` (`ackerman_follow/ppo/actor_critic.py`)
+## 2. Recurrent Spatial `ActorCritic` (`ackermann_follow/ppo/actor_critic.py`)
 
 ```mermaid
 flowchart LR
@@ -52,7 +52,7 @@ Key design choices:
 
 ---
 
-## 3. Truncated-Episode GAE (`ackerman_follow/ppo/buffer.py`)
+## 3. Truncated-Episode GAE (`ackermann_follow/ppo/buffer.py`)
 
 In `scripts/train_ppo.py`:
 * Collisions (`terminated=True`) receive no bootstrap (`V = 0`).

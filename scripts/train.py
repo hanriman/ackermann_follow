@@ -23,8 +23,8 @@ from typing import Any
 
 import yaml
 
-from ackerman_follow.algos.registry import ALGO_REGISTRY
-from ackerman_follow.engine.runner import run_training
+from ackermann_follow.algos.registry import ALGO_REGISTRY
+from ackermann_follow.engine.runner import run_training
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 DEFAULT_CURRICULUM_CFG = CONFIGS_DIR / "curriculum.yaml"

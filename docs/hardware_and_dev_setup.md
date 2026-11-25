@@ -17,7 +17,7 @@ uv sync --extra dev
 
 # Verify unit tests & lint
 uv run --extra dev pytest tests/ -v
-uv run --extra dev ruff check ackerman_follow scripts tests
+uv run --extra dev ruff check ackermann_follow scripts tests
 ```
 
 Syncing via Git keeps code, `configs/*.yaml`, and `uv.lock` aligned across x86_64 Linux and arm64 macOS without committing `.venv/`, `outputs/`, or local logs.

@@ -27,9 +27,9 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-import ackerman_follow.envs  # noqa: F401
-from ackerman_follow.config import select_device
-from ackerman_follow.engine.evaluator import _infer_action, _init_agent_state
+import ackermann_follow.envs  # noqa: F401
+from ackermann_follow.config import select_device
+from ackermann_follow.engine.evaluator import _infer_action, _init_agent_state
 from scripts.eval_policy import load_policy
 
 
@@ -315,7 +315,7 @@ def main() -> None:
     backend = args.backend
     if backend == "auto":
         try:
-            test_env = gym.make("AckermanFollow-v0", render_mode="rgb_array")
+            test_env = gym.make("AckermannFollow-v0", render_mode="rgb_array")
             test_env.reset(seed=args.seed)
             _ = test_env.render()
             test_env.close()
@@ -324,7 +324,7 @@ def main() -> None:
             backend = "topdown"
 
     render_mode = "rgb_array" if backend == "mujoco" else None
-    env = gym.make("AckermanFollow-v0", render_mode=render_mode)
+    env = gym.make("AckermannFollow-v0", render_mode=render_mode)
     topdown = TopDownRenderer(width=args.width, height=args.height) if backend == "topdown" else None
 
     frame_w, frame_h = (640, 480) if backend == "mujoco" else (args.width, args.height)

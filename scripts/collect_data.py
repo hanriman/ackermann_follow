@@ -16,10 +16,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ackerman_follow.algos.registry import load_agent
-from ackerman_follow.buffers.sequence_replay import SequenceReplayBuffer
-from ackerman_follow.config import select_device
-from ackerman_follow.engine.vec_env import build_vec_env
+from ackermann_follow.algos.registry import load_agent
+from ackermann_follow.buffers.sequence_replay import SequenceReplayBuffer
+from ackermann_follow.config import select_device
+from ackermann_follow.engine.vec_env import build_vec_env
 
 
 def parse_args() -> argparse.Namespace:

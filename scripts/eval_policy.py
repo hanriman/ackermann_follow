@@ -19,11 +19,11 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-import ackerman_follow.envs  # noqa: F401
-from ackerman_follow.algos.base import BaseAgent
-from ackerman_follow.algos.registry import load_agent
-from ackerman_follow.config import select_device
-from ackerman_follow.engine.evaluator import evaluate_agent
+import ackermann_follow.envs  # noqa: F401
+from ackermann_follow.algos.base import BaseAgent
+from ackermann_follow.algos.registry import load_agent
+from ackermann_follow.config import select_device
+from ackermann_follow.engine.evaluator import evaluate_agent
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +61,7 @@ def run_evaluation(
 ) -> dict[int, dict[str, float]]:
     """Run deterministic policy rollouts across the requested curriculum stages."""
     render_mode = "human" if render else None
-    env = gym.make("AckermanFollow-v0", render_mode=render_mode)
+    env = gym.make("AckermannFollow-v0", render_mode=render_mode)
     try:
         metrics = evaluate_agent(
             agent=model,
